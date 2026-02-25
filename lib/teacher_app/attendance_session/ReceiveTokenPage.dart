@@ -92,7 +92,18 @@ class _ReceiveTokenPageState extends State<ReceiveTokenPage> {
           if (result.advertisementData.manufacturerData.isNotEmpty) {
             final firstData =
                 result.advertisementData.manufacturerData.values.first;
-            if (firstData.isNotEmpty) payload = String.fromCharCodes(firstData);
+            if (firstData.isNotEmpty) {
+              // 1. Initialize an integer to hold the decoded value
+              int decodedInt = 0;
+
+              // 2. Reconstruct the integer from the incoming bytes (Big Endian)
+              for (int i = 0; i < firstData.length; i++) {
+                decodedInt = (decodedInt << 8) | firstData[i];
+              }
+
+              // 3. Convert the integer back to a string for your backend
+              payload = decodedInt.toString();
+            }
           }
 
           List<String> scannedUuids = result.advertisementData.serviceUuids

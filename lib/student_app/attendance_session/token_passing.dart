@@ -87,10 +87,17 @@ class _TokenTransferPageState extends State<TokenTransferPage> {
   }
 
   Uint8List payloadToBytes(String payload) {
-    if (payload.length > 16) {
-      payload = payload.substring(0, 16);
+    // 1. Convert string to a 64-bit integer (fallback to 0 if empty)
+    int numericPayload = int.tryParse(payload) ?? 0;
+
+    // 2. Create a strict 6-byte array
+    Uint8List bytes = Uint8List(6);
+
+    // 3. Pack the integer into the 6 bytes (Big Endian)
+    for (int i = 0; i < 6; i++) {
+      bytes[5 - i] = (numericPayload >> (i * 8)) & 0xFF;
     }
-    return Uint8List.fromList(payload.codeUnits);
+    return bytes;
   }
 
   String formatUuid(String input) {
@@ -162,7 +169,7 @@ class _TokenTransferPageState extends State<TokenTransferPage> {
       serviceUuid: uuid,
       manufacturerId: 1234,
       manufacturerData: payloadBytes,
-      includeDeviceName: true,
+      includeDeviceName: false, // Changed to false to prevent packet overflow
     );
 
     try {
@@ -215,9 +222,17 @@ class _TokenTransferPageState extends State<TokenTransferPage> {
           String payloadValue = 'N/A';
 
           if (result.advertisementData.manufacturerData.isNotEmpty) {
-            payloadValue = String.fromCharCodes(
-              result.advertisementData.manufacturerData.values.first,
-            );
+            List<int> bytes =
+                result.advertisementData.manufacturerData.values.first;
+            int decodedInt = 0;
+
+            // Reconstruct the integer from the bytes
+            for (int i = 0; i < bytes.length; i++) {
+              decodedInt = (decodedInt << 8) | bytes[i];
+            }
+
+            // Convert back to string for your backend logic
+            payloadValue = decodedInt.toString();
           }
 
           List<String> scannedUuids = result.advertisementData.serviceUuids
