@@ -20,7 +20,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _urlController.text = "http://10.10.10.10:8000/";
+    _urlController.text = "http://192.168.29.146:8000/";
 
     // ✅ Ask for permissions at startup
     WidgetsBinding.instance.addPostFrameCallback((_) async {

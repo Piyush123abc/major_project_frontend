@@ -1,6 +1,7 @@
 // lib/student/student_dashboard_page.dart
 import 'dart:convert';
 import 'package:attendance_app/global_variable/student_profile.dart';
+import 'package:attendance_app/student_app/absence_proposal/ProposalSelectionPage.dart';
 import 'package:attendance_app/student_app/absence_proposal/absence_proposal_dashboard.dart';
 import 'package:attendance_app/student_app/attendance_records/attendance_record_list.dart';
 import 'package:attendance_app/student_app/attendance_session/attendance_session_dasboard.dart';
@@ -141,7 +142,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   void _onAbsenceProposalPressed() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const AbsenceProposalPage()),
+      MaterialPageRoute(builder: (context) => const ProposalSelectionPage()),
     );
   }
 
@@ -209,7 +210,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: const [
                             Text(
-                              "📄 Submit Absence Proposal",
+                              "📄 Absence Proposal",
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
