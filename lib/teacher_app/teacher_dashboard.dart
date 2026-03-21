@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:attendance_app/teacher_app/absence_proposals/teacher_pending_queue.dart';
 import 'package:attendance_app/teacher_app/add_classroom_page.dart';
 import 'package:attendance_app/teacher_app/attendance_session/AttendanceSessionPage.dart';
+import 'package:firebase_messaging/firebase_messaging.dart'; // ✅ Added
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -29,7 +30,37 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     _fetchProfileAndClassrooms();
   }
 
+  // --- NEW: Sync Teacher FCM Token to Backend ---
+  Future<void> _syncFCMToken() async {
+    try {
+      final headers = await TokenHandles.getAuthHeaders();
+      if (headers.isEmpty) return;
+
+      // Get the Firebase Token for this device
+      String? fcmToken = await FirebaseMessaging.instance.getToken();
+      if (fcmToken == null) return;
+
+      // URL: base_url/user/profile/update-fcm/
+      final url = Uri.parse("${BaseUrl.value}/user/profile/update-fcm/");
+
+      final response = await http.post(
+        url,
+        headers: {...headers, "Content-Type": "application/json"},
+        body: jsonEncode({"fcm_token": fcmToken}),
+      );
+
+      if (response.statusCode == 200) {
+        print("✅ Teacher FCM Token synced successfully.");
+      } else {
+        print("⚠️ Teacher FCM sync failed: ${response.statusCode}");
+      }
+    } catch (e) {
+      print("❌ Error syncing Teacher FCM Token: $e");
+    }
+  }
+
   Future<void> _fetchProfileAndClassrooms() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _statusMessage = "";
@@ -43,6 +74,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
 
       if (profileResponse.statusCode == 200) {
         _profile = jsonDecode(profileResponse.body);
+
+        // ✅ Trigger FCM Sync once profile is confirmed
+        _syncFCMToken();
       } else {
         setState(() {
           _statusMessage =
@@ -72,9 +106,11 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
       });
     }
 
-    setState(() {
-      _isLoading = false;
-    });
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _fetchSessionStatus(int classroomId) async {
@@ -86,14 +122,17 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        _activeSessions[classroomId] = data['active'] ?? false;
+        if (mounted) {
+          setState(() {
+            _activeSessions[classroomId] = data['active'] ?? false;
+          });
+        }
       } else {
         _activeSessions[classroomId] = false;
       }
     } catch (_) {
       _activeSessions[classroomId] = false;
     }
-    setState(() {});
   }
 
   Future<void> _startOrEnterAttendance(int classroomId) async {
@@ -106,8 +145,6 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           builder: (context) => AttendanceSessionPage(classroomId: classroomId),
         ),
       );
-
-      // 🔁 Always reload when coming back
       _fetchProfileAndClassrooms();
       return;
     }
@@ -138,13 +175,10 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
                 AttendanceSessionPage(classroomId: classroomId),
           ),
         );
-
-        // 🔁 Always reload when coming back
         _fetchProfileAndClassrooms();
       } else {
         setState(() {
-          _statusMessage =
-              "❌ Failed to start session: ${response.statusCode}\n${response.body}";
+          _statusMessage = "❌ Failed: ${response.statusCode}";
         });
       }
     } catch (e) {
@@ -177,6 +211,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     return Card(
       elevation: 3,
       margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(15.0),
         child: Column(
@@ -186,6 +221,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               "👤 ${_profile!['username'] ?? 'Teacher'}",
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
+            const SizedBox(height: 5),
             Text("UID: ${_profile!['uid'] ?? ''}"),
             Text("Department: ${_profile!['department'] ?? ''}"),
           ],
@@ -199,19 +235,32 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     final bool isActive = _activeSessions[classroomId] ?? false;
 
     return Card(
-      elevation: 3,
+      elevation: 2,
       margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ListTile(
-        title: Text("${classroom['code']} - ${classroom['name']}"),
-        subtitle: Text(
-          "Created: ${classroom['created_at']?.substring(0, 10) ?? ''} | Active: ${isActive ? 'Yes' : 'No'}",
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        title: Text(
+          "${classroom['code']} - ${classroom['name']}",
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4.0),
+          child: Text(
+            "Created: ${classroom['created_at']?.substring(0, 10) ?? ''}\nStatus: ${isActive ? 'Session Active' : 'No Session'}",
+            style: TextStyle(color: isActive ? Colors.green : Colors.grey[600]),
+          ),
         ),
         trailing: ElevatedButton(
           onPressed: () => _startOrEnterAttendance(classroomId),
           style: ElevatedButton.styleFrom(
-            backgroundColor: isActive ? Colors.green : null,
+            backgroundColor: isActive ? Colors.green : Colors.deepPurple,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
           ),
-          child: Text(isActive ? "Enter Session" : "Start Attendance"),
+          child: Text(isActive ? "Enter" : "Start"),
         ),
       ),
     );
@@ -220,47 +269,68 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Teacher Dashboard")),
+      appBar: AppBar(
+        title: const Text("Teacher Dashboard"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _fetchProfileAndClassrooms,
+          ),
+        ],
+      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _fetchProfileAndClassrooms,
               child: ListView(
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.all(12),
                 children: [
-                  // ---------------- Pending Proposals Button ----------------
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    child: SizedBox(
-                      width: double.infinity,
-                      height: 60,
-                      child: ElevatedButton.icon(
-                        onPressed: _goToPendingProposals,
-                        icon: const Icon(Icons.pending_actions, size: 28),
-                        label: const Text(
-                          "Approval Queue",
-                          style: TextStyle(fontSize: 20),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
+                  // Approval Queue Button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 55,
+                    child: ElevatedButton.icon(
+                      onPressed: _goToPendingProposals,
+                      icon: const Icon(Icons.pending_actions),
+                      label: const Text(
+                        "Approval Queue",
+                        style: TextStyle(fontSize: 18),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange[800],
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
                       ),
                     ),
                   ),
-                  // ---------------- Profile Card ----------------
-                  _buildProfileCard(),
                   const SizedBox(height: 10),
-                  // ---------------- Classroom Cards ----------------
+                  _buildProfileCard(),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                    child: Text(
+                      "Your Classrooms",
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
                   ..._classrooms.map((c) => _buildClassroomCard(c)).toList(),
+                  if (_classrooms.isEmpty)
+                    const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Text("No classrooms created yet."),
+                      ),
+                    ),
                   if (_statusMessage.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.all(10.0),
                       child: Text(
                         _statusMessage,
-                        style: const TextStyle(fontSize: 16),
+                        style: const TextStyle(color: Colors.red),
                         textAlign: TextAlign.center,
                       ),
                     ),

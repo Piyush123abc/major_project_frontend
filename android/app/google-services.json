@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "593092556470",
+    "project_id": "ble-attendance-system-cfc25",
+    "storage_bucket": "ble-attendance-system-cfc25.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:593092556470:android:bf71919bc17795d2a7d817",
+        "android_client_info": {
+          "package_name": "com.piyush123abc.attendance_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDDkMk01IAkqwo6kMwyog-7xkWNZWFYSEc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

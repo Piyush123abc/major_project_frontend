@@ -6,6 +6,7 @@ import 'package:attendance_app/student_app/absence_proposal/absence_proposal_das
 import 'package:attendance_app/student_app/attendance_records/attendance_record_list.dart';
 import 'package:attendance_app/student_app/attendance_session/attendance_session_dasboard.dart';
 import 'package:attendance_app/student_app/classroom_list/classroom_list.dart';
+import 'package:firebase_messaging/firebase_messaging.dart'; // ✅ Added
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../global_variable/base_url.dart';
@@ -28,6 +29,35 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   void initState() {
     super.initState();
     _fetchDashboardData();
+  }
+
+  // --- NEW: Sync FCM Token to Backend ---
+  Future<void> _syncFCMToken() async {
+    try {
+      final headers = await TokenHandles.getAuthHeaders();
+      if (headers.isEmpty) return;
+
+      // Get the unique Firebase Token for this device
+      String? fcmToken = await FirebaseMessaging.instance.getToken();
+      if (fcmToken == null) return;
+
+      // Construct the URL based on your Django path: user/profile/update-fcm/
+      final url = Uri.parse("${BaseUrl.value}/user/profile/update-fcm/");
+
+      final response = await http.post(
+        url,
+        headers: {...headers, "Content-Type": "application/json"},
+        body: jsonEncode({"fcm_token": fcmToken}),
+      );
+
+      if (response.statusCode == 200) {
+        print("✅ Student FCM Token synced successfully.");
+      } else {
+        print("⚠️ FCM sync failed: ${response.statusCode}");
+      }
+    } catch (e) {
+      print("❌ Error syncing FCM Token: $e");
+    }
   }
 
   // --- HTTP GET with Authorization ---
@@ -58,6 +88,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
           profile = parsedProfile;
           enrollments = parsedEnrollments;
         });
+
+        // ✅ Trigger FCM Sync now that we know the user is authenticated
+        _syncFCMToken();
 
         // fetch session status for each classroom
         for (var enrollment in parsedEnrollments) {
@@ -99,7 +132,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     } catch (_) {}
   }
 
-  // --- Placeholder Functions for Future Navigation ---
+  // --- Navigation Functions ---
   void _onEnrollMorePressed() {
     Navigator.push(
       context,
@@ -168,6 +201,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                   // Profile Section
                   if (profile != null)
                     Card(
+                      elevation: 4,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
@@ -191,10 +225,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                       ),
                     ),
 
-                  // --------------------
-                  // After the Profile Section
-                  // --------------------
-                  const SizedBox(height: 7),
+                  const SizedBox(height: 12),
 
                   // Absence Proposal Button
                   Card(
@@ -216,12 +247,15 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            Icon(Icons.arrow_forward_ios),
+                            Icon(Icons.arrow_forward_ios, size: 16),
                           ],
                         ),
                       ),
                     ),
                   ),
+
+                  const SizedBox(height: 12),
+
                   // Enrollments Section Header
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -242,7 +276,12 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                   ),
                   const SizedBox(height: 10),
 
-                  if (enrollments.isEmpty) const Text("No enrollments found."),
+                  if (enrollments.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: Text("No enrollments found.")),
+                    ),
+
                   ...enrollments.map((enrollment) {
                     final classroomId = enrollment["id"];
                     final subject = enrollment["name"] ?? "Class";
@@ -250,6 +289,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                     final isActive = sessionStatus[classroomId] == true;
 
                     return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
@@ -279,17 +319,23 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                                 ),
                               ),
                               const SizedBox(height: 10),
-                              ElevatedButton(
-                                onPressed: isActive
-                                    ? () => _onEnterSessionPressed(enrollment)
-                                    : null,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: isActive
-                                      ? Colors.green
-                                      : Colors.grey,
-                                  foregroundColor: Colors.white,
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton(
+                                  onPressed: isActive
+                                      ? () => _onEnterSessionPressed(enrollment)
+                                      : null,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: isActive
+                                        ? Colors.green
+                                        : Colors.grey[400],
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                  child: const Text("Enter Attendance Session"),
                                 ),
-                                child: const Text("Enter Attendance Session"),
                               ),
                             ],
                           ),

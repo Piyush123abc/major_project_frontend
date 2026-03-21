@@ -13,21 +13,25 @@ import 'package:barcode_widget/barcode_widget.dart' as bw;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 
-class FallbackQrReceiverPage extends StatefulWidget {
+// 1. Updated Class Name
+class TeacherFallbackQRReceiverPage extends StatefulWidget {
   final String ownUid;
   final int classroomId;
 
-  const FallbackQrReceiverPage({
+  const TeacherFallbackQRReceiverPage({
     super.key,
     required this.ownUid,
     required this.classroomId,
   });
 
   @override
-  State<FallbackQrReceiverPage> createState() => _FallbackQrReceiverPageState();
+  State<TeacherFallbackQRReceiverPage> createState() =>
+      _TeacherFallbackQRReceiverPageState();
 }
 
-class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
+// 2. Updated State Class Name
+class _TeacherFallbackQRReceiverPageState
+    extends State<TeacherFallbackQRReceiverPage> {
   static const int rssiThreshold = -75;
 
   bool _isScanning = false;
@@ -51,6 +55,8 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     _initializeReceiver();
   }
 
+  // ... (Rest of your logic remains exactly the same) ...
+
   Future<void> _initializeReceiver() async {
     if (Platform.isAndroid) {
       try {
@@ -67,8 +73,6 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     _currentTargetUuid = getCurrentUuid();
     _startBleScanning();
   }
-
-  // ---------------- Core Logic ----------------
 
   String getCurrentUuid() {
     final creds = SessionDataManager.instance.getCredentials(
@@ -110,7 +114,6 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     }
   }
 
-  // ---------------- BLE Scanning ----------------
   Future<void> _startBleScanning() async {
     if (_isScanning) return;
 
@@ -158,7 +161,6 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
                   _isResultScreen = true;
                 });
 
-                // Send the Decrypted ID (The Temporary Counter) to Django
                 _callPassToken(peerTempId: decryptedUid);
                 break;
               }
@@ -184,7 +186,6 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     setState(() => _isScanning = false);
   }
 
-  // ---------------- Backend API ----------------
   Future<void> _callPassToken({required String peerTempId}) async {
     try {
       final headers = await TokenHandles.getAuthHeaders();
@@ -197,15 +198,10 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
         "$rawBase/session/student/classroom/${widget.classroomId}/pass-token/",
       );
 
-      // THE FIX: We put our Permanent UID in 'from' and the Peer's Temporary ID in 'to'
-      // This allows Django's "Smart Resolution" to translate the peer's ID perfectly.
       final response = await http.post(
         url,
         headers: {...headers, "Content-Type": "application/json"},
-        body: jsonEncode({
-          "from_uid": widget.ownUid, // Our Permanent UID
-          "to_uid": peerTempId, // Their Temporary Node ID
-        }),
+        body: jsonEncode({"from_uid": widget.ownUid, "to_uid": peerTempId}),
       );
 
       final body = jsonDecode(response.body);
@@ -250,7 +246,6 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     }
   }
 
-  // ---------------- UI Actions ----------------
   void _scanAnother() {
     FallbackCounter.scanIndex++;
     _currentTargetUuid = getCurrentUuid();
@@ -287,12 +282,11 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     super.dispose();
   }
 
-  // ---------------- Build UI ----------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Show My QR (Receiver)"),
+        title: const Text("Teacher Fallback Receiver"), // Updated title
         backgroundColor: Colors.teal,
         foregroundColor: Colors.white,
       ),
@@ -305,18 +299,16 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     );
   }
 
-  /// UI STATE 1: Waiting for a scan (Shows QR Code)
   Widget _buildQrScreen() {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         const SizedBox(height: 20),
         const Text(
-          "Present this QR to a classmate.",
+          "Present this QR to a student.", // Contextual fix
           style: TextStyle(fontSize: 16, color: Colors.grey),
         ),
         const SizedBox(height: 30),
-
         Stack(
           alignment: Alignment.center,
           children: [
@@ -337,9 +329,7 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
               ),
           ],
         ),
-
         const SizedBox(height: 40),
-
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: const [
@@ -363,7 +353,6 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
           ],
         ),
         const SizedBox(height: 30),
-
         ElevatedButton.icon(
           onPressed: _isRefreshing ? null : _manualRefresh,
           icon: _isRefreshing
@@ -387,7 +376,6 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
     );
   }
 
-  /// UI STATE 2: Token Received (Hides QR, Shows Diagnostics & Options)
   Widget _buildResultScreen() {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -415,10 +403,7 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 16, color: Colors.grey),
         ),
-
         const SizedBox(height: 40),
-
-        // DIAGNOSTIC PANEL
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -461,14 +446,11 @@ class _FallbackQrReceiverPageState extends State<FallbackQrReceiverPage> {
             ],
           ),
         ),
-
         const SizedBox(height: 50),
-
-        // NAVIGATION BUTTONS
         ElevatedButton.icon(
           onPressed: _scanAnother,
           icon: const Icon(Icons.qr_code_scanner),
-          label: const Text("Scan Another Classmate"),
+          label: const Text("Scan Another Student"),
           style: ElevatedButton.styleFrom(
             padding: const EdgeInsets.symmetric(vertical: 16),
             backgroundColor: Colors.teal,

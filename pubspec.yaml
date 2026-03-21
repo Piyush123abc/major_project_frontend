@@ -48,6 +48,8 @@ dependencies:
   photo_view: ^0.15.0    # To view images with zooming
   intl: ^0.18.1   
   file_picker: ^8.0.0
+  firebase_core: ^4.5.0
+  firebase_messaging: ^16.1.2
 dev_dependencies: 
   flutter_test:
     sdk: flutter

@@ -5,6 +5,8 @@ import 'package:attendance_app/global_variable/token_handles.dart';
 import 'package:attendance_app/permissions.dart';
 import 'package:attendance_app/student_app/attendance_session/add_to_exception_list.dart';
 import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/fallback_version/fallback_token_transfer.dart';
+import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_qr_server.dart';
+import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_token_transfer.dart';
 import 'package:attendance_app/student_app/attendance_session/token_passing.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
@@ -326,10 +328,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => TokenTransferPage(
-                        ownUid: GlobalStudentProfile.currentStudent?.uid ?? "",
-                        classroomId: widget.classroomId,
-                      ),
+                      builder: (context) => SecurePeerGatewayPage(),
                     ),
                   );
                 } else {
