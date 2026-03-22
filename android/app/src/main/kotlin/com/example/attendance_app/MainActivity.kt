@@ -101,6 +101,12 @@ class MainActivity: FlutterActivity() {
         val echoChar = BluetoothGattCharacteristic(CHAR_UUID_ECHO, 
             BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ, 
             BluetoothGattCharacteristic.PERMISSION_READ)
+
+        val cccd = BluetoothGattDescriptor(
+        UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"),
+        BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+        )   
+        echoChar.addDescriptor(cccd)
         
         service.addCharacteristic(writeChar)
         service.addCharacteristic(echoChar)

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:attendance_app/teacher_app/attendance_session/GetExceptionList.dart';
 import 'package:attendance_app/teacher_app/attendance_session/MasterNodesManagerPage.dart';
 import 'package:attendance_app/teacher_app/attendance_session/Receive_Token_pages/fallbackQR.dart';
+import 'package:attendance_app/teacher_app/attendance_session/Receive_Token_pages/teacher_secure_host.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -299,8 +300,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) =>
-                          ReceiveTokenPage(classroomId: widget.classroomId),
+                      builder: (context) => TeacherSecureHostPage(
+                        classroomId: widget.classroomId,
+                      ),
                     ),
                   );
                 } else {

@@ -19,6 +19,9 @@ import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:http/http.dart' as http;
 
+// Make sure your import for SecurePeerGatewayPage is correct here
+// import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_peer_gateway.dart';
+
 /// Attendance Session Page
 class AttendanceSessionPage extends StatefulWidget {
   final int classroomId;
@@ -324,11 +327,13 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               ),
               onPressed: () {
                 if (_isSecureMode) {
-                  // Route to your new Secure BLE Page
+                  // Route to your new Secure BLE Page AND pass the real classroomId
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => SecurePeerGatewayPage(),
+                      builder: (context) => SecurePeerGatewayPage(
+                        classroomId: widget.classroomId, // <-- FIX APPLIED HERE
+                      ),
                     ),
                   );
                 } else {
@@ -345,7 +350,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               },
               child: Text(
                 _isSecureMode ? "Pass Token (Secure)" : "Pass Token (Fallback)",
-                style: const TextStyle(fontSize: 18),
+                style: const TextStyle(fontSize: 18, color: Colors.white),
               ),
             ),
 

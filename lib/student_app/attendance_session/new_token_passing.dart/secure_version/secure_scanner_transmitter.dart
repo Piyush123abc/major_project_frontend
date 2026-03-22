@@ -51,6 +51,9 @@ class _SecureProximityScannerPageState
   String _backendMessage = "";
   bool _isSuccess = false;
 
+  // --- NEW: Terminal Logs for debugging ---
+  final List<String> _terminalLogs = [];
+
   // GATT Constants
   final String writeCharUuid = "11111111-2222-3333-4444-555555555555";
   final String notifyCharUuid = "22222222-3333-4444-5555-666666666666";
@@ -59,6 +62,18 @@ class _SecureProximityScannerPageState
   void initState() {
     super.initState();
     _checkBluetooth();
+  }
+
+  void _addLog(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    setState(() {
+      String prefix = isError ? "🔴 " : "🟢 ";
+      String time = DateTime.now()
+          .toIso8601String()
+          .split('T')[1]
+          .substring(0, 8);
+      _terminalLogs.insert(0, "$prefix[$time] $msg");
+    });
   }
 
   Future<void> _checkBluetooth() async {
@@ -84,6 +99,7 @@ class _SecureProximityScannerPageState
 
     HapticFeedback.lightImpact();
     _cameraController.stop(); // Kill camera to save resources
+    _addLog("QR Scanned: ${targetUuid.substring(0, 8)}...");
 
     setState(() {
       _stage = ScanStage.hunting;
@@ -97,6 +113,8 @@ class _SecureProximityScannerPageState
   // PHASE 2: HUNT & CONNECT
   // ==========================================
   Future<void> _huntForHost(String targetUuid) async {
+    _addLog("Starting BLE Scan for Host...");
+
     _bleScanSub = FlutterBluePlus.scanResults.listen((results) async {
       for (var r in results) {
         List<String> uuids = r.advertisementData.serviceUuids
@@ -106,6 +124,8 @@ class _SecureProximityScannerPageState
         if (uuids.contains(targetUuid)) {
           _bleScanSub?.cancel();
           FlutterBluePlus.stopScan();
+
+          _addLog("Host Found! RSSI: ${r.rssi} dBm");
 
           setState(() {
             _rssi = r.rssi;
@@ -134,19 +154,23 @@ class _SecureProximityScannerPageState
     String serviceUuid,
   ) async {
     try {
-      // 1. Connect & Optimize Radio
+      _addLog("Connecting to GATT Server...");
       await device.connect(autoConnect: false, mtu: null);
-      if (Platform.isAndroid)
+
+      if (Platform.isAndroid) {
         await device.requestConnectionPriority(
           connectionPriorityRequest: ConnectionPriority.high,
         );
+        await device.requestMtu(512);
+        _addLog("MTU Requested. Radio Optimized.");
+      }
 
       setState(() {
         _stage = ScanStage.measuring;
         _statusText = "Executing RTT Burst...";
       });
 
-      // 2. Discover Services & Pipes
+      _addLog("Discovering Services...");
       List<BluetoothService> services = await device.discoverServices();
       BluetoothService? targetService;
       for (var s in services) {
@@ -166,6 +190,7 @@ class _SecureProximityScannerPageState
 
       if (writeChar == null || notifyChar == null)
         throw Exception("GATT Pipes missing.");
+      _addLog("GATT Pipes secured.");
 
       // 3. Prepare the Cryptographic Challenge
       final creds = SessionDataManager.instance.getCredentials(
@@ -190,23 +215,26 @@ class _SecureProximityScannerPageState
           .toList();
 
       // 4. Set the Echo Trap
+      _addLog("Setting Echo Trap (CCCD)...");
       await notifyChar.setNotifyValue(true);
       Completer<List<int>> echoCompleter = Completer();
 
       final notifySub = notifyChar.onValueReceived.listen((value) {
         if (value.isNotEmpty && !echoCompleter.isCompleted) {
+          _addLog("ECHO RECEIVED from Host!");
           echoCompleter.complete(value);
         }
       });
 
-      // 5. The RTT Burst (3 rapid writes)
+      // 5. The RTT Burst (3 rapid writes) RESTORED WITH LOGS
+      _addLog("Firing RTT Burst (3 writes)...");
       List<int> bursts = [];
       for (int i = 0; i < 3; i++) {
         Stopwatch sw = Stopwatch()..start();
-        // withoutResponse: false forces hardware to wait for ACK
         await writeChar.write(encryptedChallenge, withoutResponse: false);
         sw.stop();
         bursts.add(sw.elapsedMilliseconds);
+        _addLog("Write ${i + 1} ACKed in ${sw.elapsedMilliseconds}ms");
         await Future.delayed(const Duration(milliseconds: 10)); // Tiny breath
       }
 
@@ -216,14 +244,22 @@ class _SecureProximityScannerPageState
         _statusText = "Verifying Echo...";
       });
 
+      _addLog("Burst complete. Waiting 5s for Echo...");
+
       // 6. Catch the Echo
       List<int> echoPayload = await echoCompleter.future.timeout(
-        const Duration(seconds: 2),
+        const Duration(seconds: 5),
+        onTimeout: () {
+          throw Exception("Echo Timeout. Host took too long or crashed.");
+        },
       );
       notifySub.cancel();
+
+      _addLog("Disconnecting cleanly...");
       await device.disconnect(); // Free the Host instantly!
 
       // 7. Verify the Crypto
+      _addLog("Decrypting Host Echo...");
       final decryptedEcho = encrypter.decryptBytes(
         enc.Encrypted(Uint8List.fromList(echoPayload)),
       );
@@ -250,11 +286,13 @@ class _SecureProximityScannerPageState
 
       // Extract Host Node ID (Last 2 bytes)
       _peerNodeId = (decryptedEcho[14] << 8) | decryptedEcho[15];
+      _addLog("Crypto Verified! Node ID: $_peerNodeId");
 
       // 8. Django Backend Sync
       await _syncWithDjango(_peerNodeId.toString());
     } catch (e) {
       device.disconnect();
+      _addLog("FAIL: $e", isError: true);
       _failProtocol(e.toString());
     }
   }
@@ -346,12 +384,62 @@ class _SecureProximityScannerPageState
 
             // DYNAMIC CONTENT AREA
             Expanded(
+              flex: 5,
               child: _stage == ScanStage.camera
                   ? _buildCameraView()
                   : _stage == ScanStage.report
                   ? _buildReportView()
                   : _buildProcessingView(),
             ),
+
+            // --- NEW: TERMINAL LOGS UI ---
+            if (_stage != ScanStage.camera && _stage != ScanStage.report)
+              Expanded(
+                flex: 2,
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF111111),
+                    border: Border.all(color: Colors.grey.shade900),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        "SCANNER LOGS",
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _terminalLogs.length,
+                          itemBuilder: (context, index) {
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 4.0),
+                              child: Text(
+                                _terminalLogs[index],
+                                style: TextStyle(
+                                  color: _terminalLogs[index].startsWith("🔴")
+                                      ? Colors.redAccent
+                                      : Colors.greenAccent,
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
 
             // RED EXIT BUTTON (Always at bottom)
             Padding(
@@ -454,87 +542,256 @@ class _SecureProximityScannerPageState
         ? Icons.check_circle_outline
         : Icons.error_outline;
 
-    return Padding(
-      padding: const EdgeInsets.all(24.0),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Icon(themeIcon, size: 80, color: themeColor),
-          const SizedBox(height: 16),
-          Text(
-            _isSuccess ? "HANDSHAKE SECURED" : "HANDSHAKE FAILED",
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.w900,
-              color: themeColor,
-              letterSpacing: 1.5,
-            ),
-          ),
-          const SizedBox(height: 30),
+    String calculateAverageRtt() {
+      if (_rtts.isEmpty) return "N/A";
+      double avg = _rtts.reduce((a, b) => a + b) / _rtts.length;
+      return "${avg.toStringAsFixed(1)} ms";
+    }
 
-          // TERMINAL REPORT BOX
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFF111111),
-              border: Border.all(color: Colors.grey.shade900),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildReportLine(
-                  "Signal (RSSI):",
-                  "${_rssi ?? 'N/A'} dBm",
-                  _rssi != null && _rssi! > -80,
+    String calculateMinRtt() {
+      if (_rtts.isEmpty) return "N/A";
+      return "${_rtts.reduce(min)} ms";
+    }
+
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // --- HEADER SECTION ---
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              decoration: BoxDecoration(
+                color: themeColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: themeColor.withOpacity(0.3),
+                  width: 2,
                 ),
-                const Divider(color: Colors.white24),
-                _buildReportLine(
-                  "RTT Burst 1:",
-                  _rtts.isNotEmpty ? "${_rtts[0]} ms" : "N/A",
-                  _rtts.isNotEmpty && _rtts[0] < 150,
-                ),
-                _buildReportLine(
-                  "RTT Burst 2:",
-                  _rtts.length > 1 ? "${_rtts[1]} ms" : "N/A",
-                  _rtts.length > 1 && _rtts[1] < 150,
-                ),
-                _buildReportLine(
-                  "RTT Burst 3:",
-                  _rtts.length > 2 ? "${_rtts[2]} ms" : "N/A",
-                  _rtts.length > 2 && _rtts[2] < 150,
-                ),
-                const Divider(color: Colors.white24),
-                _buildReportLine(
-                  "Crypto Nonce:",
-                  _nonceVerified ? "MATCH" : "FAILED",
-                  _nonceVerified,
-                ),
-                _buildReportLine(
-                  "Extracted Peer ID:",
-                  _peerNodeId?.toString() ?? "NONE",
-                  _peerNodeId != null,
-                ),
-                const Divider(color: Colors.white24),
-                const Text(
-                  "Server Response:",
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _backendMessage,
-                  style: TextStyle(
-                    color: _isSuccess ? Colors.greenAccent : Colors.redAccent,
-                    fontWeight: FontWeight.bold,
+              ),
+              child: Column(
+                children: [
+                  Icon(themeIcon, size: 70, color: themeColor),
+                  const SizedBox(height: 12),
+                  Text(
+                    _isSuccess ? "HANDSHAKE SECURED" : "HANDSHAKE FAILED",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                      color: themeColor,
+                      letterSpacing: 1.5,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+            const SizedBox(height: 24),
+
+            // --- CARD 1: TELEMETRY & TIMING ---
+            _buildSectionCard(
+              title: "CONNECTION TELEMETRY",
+              icon: Icons.radar,
+              iconColor: Colors.blueAccent,
+              child: Column(
+                children: [
+                  _buildDataRow(
+                    "Signal (RSSI)",
+                    "${_rssi ?? 'N/A'} dBm",
+                    isGood: _rssi != null && _rssi! > -80,
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8.0),
+                    child: Divider(color: Colors.white12),
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _buildMiniStatBox(
+                        "Burst 1",
+                        _rtts.isNotEmpty ? "${_rtts[0]}ms" : "N/A",
+                      ),
+                      _buildMiniStatBox(
+                        "Burst 2",
+                        _rtts.length > 1 ? "${_rtts[1]}ms" : "N/A",
+                      ),
+                      _buildMiniStatBox(
+                        "Burst 3",
+                        _rtts.length > 2 ? "${_rtts[2]}ms" : "N/A",
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildHighlightStat("Min RTT", calculateMinRtt()),
+                      _buildHighlightStat("Avg RTT", calculateAverageRtt()),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // --- CARD 2: CRYPTOGRAPHY ---
+            _buildSectionCard(
+              title: "SECURITY VERIFICATION",
+              icon: Icons.lock_outline,
+              iconColor: Colors.purpleAccent,
+              child: Column(
+                children: [
+                  _buildDataRow(
+                    "AES Nonce Match",
+                    _nonceVerified ? "VERIFIED" : "FAILED",
+                    isGood: _nonceVerified,
+                  ),
+                  const SizedBox(height: 8),
+                  _buildDataRow(
+                    "Extracted Peer ID",
+                    _peerNodeId?.toString() ?? "NONE",
+                    isGood: _peerNodeId != null,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // --- CARD 3: CLOUD SYNC ---
+            _buildSectionCard(
+              title: "DJANGO SERVER RESPONSE",
+              icon: Icons.cloud_done_outlined,
+              iconColor: Colors.orangeAccent,
+              child: Text(
+                _backendMessage,
+                style: TextStyle(
+                  color: _isSuccess ? Colors.greenAccent : Colors.redAccent,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+            ),
+            const SizedBox(height: 20), // Bottom padding
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- NEW UI HELPER WIDGETS ---
+
+  Widget _buildSectionCard({
+    required String title,
+    required IconData icon,
+    required Color iconColor,
+    required Widget child,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111111),
+        border: Border.all(color: Colors.grey.shade900),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.5),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 18, color: iconColor),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  color: iconColor.withOpacity(0.8),
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDataRow(String label, String value, {required bool isGood}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(color: Colors.white70, fontSize: 14),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            color: isGood ? Colors.greenAccent : Colors.redAccent,
+            fontWeight: FontWeight.bold,
+            fontFamily: 'monospace',
+            fontSize: 15,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMiniStatBox(String label, String value) {
+    return Column(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(color: Colors.white54, fontSize: 10),
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontFamily: 'monospace',
+              fontSize: 12,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHighlightStat(String label, String value) {
+    return Row(
+      children: [
+        Text(
+          "$label: ",
+          style: const TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.cyanAccent,
+            fontWeight: FontWeight.bold,
+            fontFamily: 'monospace',
+            fontSize: 14,
+          ),
+        ),
+      ],
     );
   }
 

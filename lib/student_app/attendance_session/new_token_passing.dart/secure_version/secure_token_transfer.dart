@@ -4,11 +4,10 @@ import 'package:attendance_app/student_app/attendance_session/new_token_passing.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-// Make sure to import your host page here!
-// import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_proximity_host.dart';
-
 class SecurePeerGatewayPage extends StatelessWidget {
-  const SecurePeerGatewayPage({super.key});
+  final int classroomId;
+
+  const SecurePeerGatewayPage({super.key, required this.classroomId});
 
   @override
   Widget build(BuildContext context) {
@@ -57,8 +56,9 @@ class SecurePeerGatewayPage extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
+                      // FIX 1: Removed 'const' and passed the dynamic classroomId
                       builder: (context) =>
-                          const SecureProximityHostPage(classroomId: 123),
+                          SecureProximityHostPage(classroomId: classroomId),
                     ),
                   );
                 },
@@ -84,12 +84,11 @@ class SecurePeerGatewayPage extends StatelessWidget {
                     context,
                     MaterialPageRoute(
                       builder: (context) => SecureProximityScannerPage(
-                        // Dynamically pull the scanner's real UID
                         ownUid:
                             GlobalStudentProfile.currentStudent?.uid ??
                             "UNKNOWN_UID",
-                        // TODO: Pass your dynamic classroom ID here when ready
-                        classroomId: 123,
+                        // FIX 2: Passed the dynamic classroomId instead of 123
+                        classroomId: classroomId,
                       ),
                     ),
                   );
@@ -145,7 +144,7 @@ class _AnimatedActionCardState extends State<_AnimatedActionCard> {
         setState(() => _isPressed = false);
       },
       child: AnimatedScale(
-        scale: _isPressed ? 0.96 : 1.0, // Shrinks slightly when pressed
+        scale: _isPressed ? 0.96 : 1.0,
         duration: const Duration(milliseconds: 100),
         curve: Curves.easeInOut,
         child: Container(
@@ -157,7 +156,6 @@ class _AnimatedActionCardState extends State<_AnimatedActionCard> {
               width: 2,
             ),
             boxShadow: [
-              // Subtle neon glow effect
               BoxShadow(
                 color: widget.accentColor.withOpacity(_isPressed ? 0.2 : 0.05),
                 blurRadius: 20,

@@ -29,6 +29,11 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   void initState() {
     super.initState();
     _fetchDashboardData();
+
+    // Catch token changes that happen while the app is open
+    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
+      _syncFCMToken(); // Just call your existing function!
+    });
   }
 
   // --- NEW: Sync FCM Token to Backend ---

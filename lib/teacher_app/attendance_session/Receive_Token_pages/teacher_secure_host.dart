@@ -1,24 +1,27 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:barcode_widget/barcode_widget.dart' as bw;
 import 'package:encrypt/encrypt.dart' as enc;
+import 'package:http/http.dart' as http;
 
-import 'package:attendance_app/global_variable/student_profile.dart';
+import 'package:attendance_app/global_variable/base_url.dart';
+import 'package:attendance_app/global_variable/token_handles.dart';
+import 'package:attendance_app/global_variable/teacher_profile.dart';
 import 'package:attendance_app/global_variable/session_data_manager.dart';
 
-class SecureProximityHostPage extends StatefulWidget {
+class TeacherSecureHostPage extends StatefulWidget {
   final int classroomId;
 
-  const SecureProximityHostPage({super.key, required this.classroomId});
+  const TeacherSecureHostPage({super.key, required this.classroomId});
 
   @override
-  State<SecureProximityHostPage> createState() =>
-      _SecureProximityHostPageState();
+  State<TeacherSecureHostPage> createState() => _TeacherSecureHostPageState();
 }
 
-class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
+class _TeacherSecureHostPageState extends State<TeacherSecureHostPage> {
   static const MethodChannel _methodChannel = MethodChannel(
     'com.attendance/command',
   );
@@ -29,17 +32,20 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
   StreamSubscription? _eventSubscription;
   final List<String> _terminalLogs = [];
 
-  late String _studentUid;
+  late String _teacherUid;
   late String _bleServiceUuid;
 
   bool _isBroadcasting = false;
+  bool _isLoadingKeys =
+      true; // Added to prevent broadcasting before keys arrive
 
   @override
   void initState() {
     super.initState();
 
-    _studentUid = GlobalStudentProfile.currentStudent?.uid ?? "UNKNOWN_UID";
-    _bleServiceUuid = _formatUidToBleUuid(_studentUid);
+    // 1. Pull the TEACHER'S UID from the GlobalStore
+    _teacherUid = GlobalStore.teacherUid;
+    _bleServiceUuid = _formatUidToBleUuid(_teacherUid);
 
     _eventSubscription = _eventChannel.receiveBroadcastStream().listen((event) {
       final payload = event.toString();
@@ -57,12 +63,8 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
         HapticFeedback.lightImpact();
       } else if (payload.startsWith("CHALLENGE:")) {
         final parts = payload.split(":");
-
-        // We expect exactly 8 parts: "CHALLENGE" (1) + MAC Address (6) + Hex Payload (1)
         if (parts.length >= 8) {
-          // Reconstruct the MAC Address
           String macAddress = parts.sublist(1, 7).join(":");
-          // The Hex Payload is the very last item
           String hexPayload = parts.last;
 
           _addLog("AUTH: Challenge from $macAddress");
@@ -70,14 +72,62 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
             macAddress: macAddress,
             hexPayload: hexPayload,
           );
-        } else {
-          _addLog("SYS ERR: Malformed challenge received", isError: true);
         }
       }
     });
 
-    _startServer();
+    // 2. Fetch keys first, then start the server
+    _initializeHost();
   }
+
+  // --- NEW: FETCH KEYS FROM DJANGO ---
+  Future<void> _initializeHost() async {
+    await _fetchTeacherKeys();
+    if (!_isLoadingKeys) {
+      _startServer();
+    }
+  }
+
+  Future<void> _fetchTeacherKeys() async {
+    _addLog("SYS: Fetching Teacher Session Keys...");
+    try {
+      final headers = await TokenHandles.getAuthHeaders();
+      String rawBase = BaseUrl.value.endsWith('/')
+          ? BaseUrl.value.substring(0, BaseUrl.value.length - 1)
+          : BaseUrl.value;
+
+      final url = Uri.parse(
+        "$rawBase/session/teacher/classroom/${widget.classroomId}/credentials/",
+      );
+      final response = await http.get(url, headers: headers);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        SessionDataManager.instance.saveCredentials(
+          classroomId: widget.classroomId.toString(),
+          kClass: data['k_class'],
+          sessionSeed: data['session_seed'] ?? "TEACHER_SEED",
+          nodeId: data['node_id'].toString(), // This will be '0' from Django
+        );
+
+        _addLog("SYS: Keys acquired. Node ID: ${data['node_id']}");
+        if (mounted) {
+          setState(() {
+            _isLoadingKeys = false;
+          });
+        }
+      } else {
+        _addLog(
+          "SYS ERR: Failed to fetch keys. Code: ${response.statusCode}",
+          isError: true,
+        );
+      }
+    } catch (e) {
+      _addLog("SYS ERR: Network error fetching keys.", isError: true);
+    }
+  }
+  // -----------------------------------
 
   void _addLog(String msg, {bool isError = false}) {
     if (!mounted) return;
@@ -91,16 +141,11 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
     });
   }
 
-  // --- CRYPTOGRAPHY ---
   void _handleIncomingChallenge({
     required String macAddress,
     required String hexPayload,
   }) {
     try {
-      // --- ADD THESE 3 LINES ---
-      _addLog("DEBUG: Requesting keys for Classroom ID: ${widget.classroomId}");
-      SessionDataManager.instance.debugPrintState();
-      // -------------------------
       final creds = SessionDataManager.instance.getCredentials(
         widget.classroomId.toString(),
       );
@@ -118,7 +163,8 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
       );
 
       List<int> newPayload = decryptedBytes.sublist(0, 14);
-      int myNodeId = int.parse(creds.nodeId);
+      int myNodeId = int.parse(creds.nodeId); // Parses "0" perfectly!
+
       newPayload.add((myNodeId >> 8) & 0xFF);
       newPayload.add(myNodeId & 0xFF);
 
@@ -137,7 +183,6 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
     }
   }
 
-  // --- HELPERS ---
   List<int> _hexToBytes(String hex) {
     List<int> bytes = [];
     for (int i = 0; i < hex.length; i += 2) {
@@ -162,7 +207,6 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
     return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}";
   }
 
-  // --- NATIVE BRIDGE ---
   Future<void> _startServer() async {
     try {
       _addLog("SYS: Starting BLE Server...");
@@ -180,9 +224,7 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
     try {
       await _methodChannel.invokeMethod('stopServer');
       _addLog("SYS: Server stopped.");
-    } catch (e) {
-      debugPrint("Failed to stop server: $e");
-    }
+    } catch (e) {}
   }
 
   @override
@@ -192,23 +234,21 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
     super.dispose();
   }
 
-  // --- UI BUILDER ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black, // Pure black background
+      backgroundColor: Colors.black,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // HEADER & STATUS DOT
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text(
-                    "HOST SYNC",
+                    "TEACHER HOST",
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 22,
@@ -225,13 +265,9 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
                   ),
                 ],
               ),
-
-              // FLEXIBLE SPACE TO PUSH QR DOWN
               const Expanded(flex: 3, child: SizedBox()),
-
-              // NEAT STUDENT ID & INSTRUCTION
               Text(
-                "ID: $_studentUid",
+                "ID: $_teacherUid",
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 16,
@@ -242,13 +278,13 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
               ),
               const SizedBox(height: 6),
               const Text(
-                "Have a classmate scan this to connect",
+                "Have a student scan this to begin the chain",
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 14, color: Colors.white60),
               ),
               const SizedBox(height: 20),
 
-              // QR CODE DISPLAY
+              // Only show QR code if keys have been fetched successfully
               Center(
                 child: Container(
                   padding: const EdgeInsets.all(16),
@@ -256,20 +292,26 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: bw.BarcodeWidget(
-                    barcode: bw.Barcode.qrCode(),
-                    data: _bleServiceUuid,
-                    width: 220,
-                    height: 220,
-                    color: Colors.black,
-                  ),
+                  child: _isLoadingKeys
+                      ? const SizedBox(
+                          width: 220,
+                          height: 220,
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.teal,
+                            ),
+                          ),
+                        )
+                      : bw.BarcodeWidget(
+                          barcode: bw.Barcode.qrCode(),
+                          data: _bleServiceUuid,
+                          width: 220,
+                          height: 220,
+                          color: Colors.black,
+                        ),
                 ),
               ),
-
-              // FLEXIBLE SPACE TO PUSH BUTTON TO BOTTOM
               const Expanded(flex: 4, child: SizedBox()),
-
-              // MASSIVE RED STOP BUTTON
               SizedBox(
                 height: 60,
                 child: ElevatedButton.icon(
@@ -296,10 +338,8 @@ class _SecureProximityHostPageState extends State<SecureProximityHostPage> {
                 ),
               ),
               const SizedBox(height: 16),
-
-              // SMALL SYSTEM LOGS TERMINAL
               Container(
-                height: 120, // Strict, small height
+                height: 120,
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: const Color(0xFF111111),

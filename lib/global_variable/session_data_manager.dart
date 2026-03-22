@@ -58,4 +58,15 @@ class SessionDataManager {
   void clearAll() {
     _activeSessions.clear();
   }
+
+  void debugPrintState() {
+    print("--- SESSION MANAGER STATE ---");
+    print("Total active sessions: ${_activeSessions.length}");
+    _activeSessions.forEach((key, value) {
+      print(
+        "Classroom ID: $key | kClass: ${value.kClass.substring(0, 4)}... | Node ID: ${value.nodeId}",
+      );
+    });
+    print("-----------------------------");
+  }
 }
