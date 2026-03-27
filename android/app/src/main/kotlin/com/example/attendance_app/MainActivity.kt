@@ -15,6 +15,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.util.UUID
+import io.flutter.plugins.GeneratedPluginRegistrant 
 
 @SuppressLint("MissingPermission")
 class MainActivity: FlutterActivity() {
@@ -30,6 +31,8 @@ class MainActivity: FlutterActivity() {
     private var bluetoothManager: BluetoothManager? = null
     private var currentServiceUuid: UUID? = null
 
+
+    
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 

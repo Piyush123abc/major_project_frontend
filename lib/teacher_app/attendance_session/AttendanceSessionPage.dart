@@ -5,11 +5,12 @@ import 'package:attendance_app/teacher_app/attendance_session/Receive_Token_page
 import 'package:attendance_app/teacher_app/attendance_session/Receive_Token_pages/teacher_secure_host.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart'; // ✅ Added Geolocator
 
 import '../../global_variable/base_url.dart';
 import '../../global_variable/token_handles.dart';
 import '../../global_variable/session_data_manager.dart';
-import 'ReceiveTokenPage.dart';
+import 'package:location/location.dart' as loc;
 
 class AttendanceSessionPage extends StatefulWidget {
   final int classroomId;
@@ -30,20 +31,29 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   @override
   void initState() {
     super.initState();
-    _fetchSessionCredentials();
+    _initializeSession(); // ✅ Grouped initialization calls
   }
 
   // ==========================================
-  // FETCH SESSION CREDENTIALS
+  // INITIALIZATION
+  // ==========================================
+  Future<void> _initializeSession() async {
+    await _fetchSessionCredentials();
+  }
+
+  // ==========================================
+  // FETCH SESSION CREDENTIALS & SET GPS
   // ==========================================
   Future<void> _fetchSessionCredentials() async {
     String classIdStr = widget.classroomId.toString();
 
-    // Skip if already loaded
+    // ✅ If we already have the keys, we skip EVERYTHING (Keys & GPS)
     if (SessionDataManager.instance.hasCredentials(classIdStr)) {
-      setState(() {
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
       return;
     }
 
@@ -64,24 +74,142 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           classroomId: classIdStr,
           kClass: data['k_class'],
           sessionSeed: data['session_seed'] ?? "",
-          // This now captures the EXACT UID (e.g., 'teacher1') from Django
           nodeId: data['node_id']?.toString() ?? "unknown",
         );
 
-        setState(() {
-          _loading = false;
-        });
+        // 👇 AWAIT is back: The UI will stay in the loading state until GPS is done
+        await _setTeacherGPS();
+
+        if (mounted) {
+          setState(() {
+            _loading = false;
+          });
+        }
       } else {
+        if (mounted) {
+          setState(() {
+            _errorMessage = "Failed to get session keys: ${response.body}";
+            _loading = false;
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
         setState(() {
-          _errorMessage = "Failed to get session keys: ${response.body}";
+          _errorMessage = "Network Error fetching keys: $e";
           _loading = false;
         });
       }
-    } catch (e) {
-      setState(() {
-        _errorMessage = "Network Error fetching keys: $e";
-        _loading = false;
+    }
+  }
+
+  // ==========================================
+  // SET TEACHER GPS ANCHOR
+  // ==========================================
+  Future<void> _setTeacherGPS() async {
+    try {
+      // 1. Trigger the native "1-Click Turn On Location" popup (Android only, iOS forces settings)
+      loc.Location locationService = loc.Location();
+      bool serviceEnabled = await locationService.serviceEnabled();
+
+      if (!serviceEnabled) {
+        // 👇 THIS triggers the magic native Google Play Services popup!
+        serviceEnabled = await locationService.requestService();
+        if (!serviceEnabled) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  "⚠️ GPS is required. Please enable it to continue.",
+                ),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return; // They clicked "No Thanks"
+        }
+      }
+
+      // 2. Check and REQUEST permissions
+      LocationPermission permission = await Geolocator.checkPermission();
+
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  "❌ Location permission denied. Cannot set GPS anchor.",
+                ),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                "❌ Permissions permanently denied. Please enable in app settings.",
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // 3. Get actual position (Using Geolocator for best accuracy)
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      // 4. Send to backend
+      final headers = await TokenHandles.getAuthHeaders();
+      headers['Content-Type'] = 'application/json';
+
+      final url = Uri.parse(
+        "${BaseUrl.value}/session/classroom/${widget.classroomId}/teacher/gps/",
+      );
+
+      final body = jsonEncode({
+        "latitude": position.latitude,
+        "longitude": position.longitude,
       });
+
+      final response = await http.post(url, headers: headers, body: body);
+
+      if (mounted) {
+        if (response.statusCode == 200) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("📍 GPS Anchor set successfully!"),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("⚠️ Failed to set GPS: ${response.body}"),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("❌ Network error while setting GPS: $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -155,7 +283,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
 
     if (response == null) {
-      _showResultDialog(context, "❌ Network error");
+      if (mounted) _showResultDialog(context, "❌ Network error");
       return;
     }
 
@@ -165,17 +293,19 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       SessionDataManager.instance.clearSession(widget.classroomId.toString());
 
-      _showResultDialog(
-        context,
-        "✅ ${data["message"]}\n\n"
-        "📊 Summary:\n"
-        "- Total: ${summary["total_students"]}\n"
-        "- Present: ${summary["present"]}\n"
-        "- Absent: ${summary["absent"]}",
-        success: true,
-      );
+      if (mounted) {
+        _showResultDialog(
+          context,
+          "✅ ${data["message"]}\n\n"
+          "📊 Summary:\n"
+          "- Total: ${summary["total_students"]}\n"
+          "- Present: ${summary["present"]}\n"
+          "- Absent: ${summary["absent"]}",
+          success: true,
+        );
+      }
     } else {
-      _showResultDialog(context, "⚠️ Failed: ${response.body}");
+      if (mounted) _showResultDialog(context, "⚠️ Failed: ${response.body}");
     }
   }
 
@@ -194,7 +324,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             onPressed: () {
               Navigator.pop(context);
               if (success) {
-                Navigator.pop(context);
+                Navigator.pop(context); // Go back to previous screen
               }
             },
             child: const Text("OK"),
@@ -210,7 +340,26 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(strokeWidth: 3),
+              const SizedBox(height: 24),
+              const Text(
+                "Setting up session...",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "Fetching keys & securing location",
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
     if (_errorMessage != null) {
@@ -287,10 +436,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             ),
             const SizedBox(height: 16),
 
-            // THE MAGIC FIX IS IN THIS BUTTON LOGIC 👇
             ElevatedButton.icon(
               onPressed: () {
-                // Pull the EXACT identity we got from Django
                 final creds = SessionDataManager.instance.getCredentials(
                   widget.classroomId.toString(),
                 );
@@ -310,8 +457,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                     context,
                     MaterialPageRoute(
                       builder: (context) => TeacherFallbackQRReceiverPage(
-                        ownUid:
-                            actualUid, // Guaranteed to be 'teacher1' (or whatever is in your DB)
+                        ownUid: actualUid,
                         classroomId: widget.classroomId,
                       ),
                     ),

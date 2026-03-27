@@ -5,24 +5,15 @@ import 'package:attendance_app/global_variable/token_handles.dart';
 import 'package:attendance_app/permissions.dart';
 import 'package:attendance_app/student_app/attendance_session/add_to_exception_list.dart';
 import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/fallback_version/fallback_token_transfer.dart';
-import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_qr_server.dart';
 import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_token_transfer.dart';
-import 'package:attendance_app/student_app/attendance_session/token_passing.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-
-// Import the Session Data Manager
 import 'package:attendance_app/global_variable/session_data_manager.dart';
-
 import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:http/http.dart' as http;
 
-// Make sure your import for SecurePeerGatewayPage is correct here
-// import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_peer_gateway.dart';
-
-/// Attendance Session Page
 class AttendanceSessionPage extends StatefulWidget {
   final int classroomId;
   final String classroomName;
@@ -44,16 +35,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   bool _loading = true;
   String? _errorMessage;
 
-  // Toggle state for Secure BLE Mode vs Fallback Mode
+  // Toggle state
   bool _isSecureMode = true;
   bool _bluetoothOn = false;
   StreamSubscription<BluetoothAdapterState>? _btStateSubscription;
 
+  // Hidden Trigger Logic (Developer Options Style)
+  int _tapCount = 0;
+  DateTime? _lastTapTime;
+  final int _totalSteps = 8;
+  final int _showAtStep = 5; // Starts showing toast at "3 steps away"
+
   @override
   void initState() {
     super.initState();
-
-    // Listen for Bluetooth changes constantly
     _btStateSubscription = FlutterBluePlus.adapterState.listen((state) {
       if (mounted) {
         setState(() {
@@ -61,24 +56,60 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         });
       }
     });
-
     _initializeSession();
-
-    // Request permissions after the first frame renders
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkPermissionsAndBluetooth();
     });
   }
 
+  @override
+  void dispose() {
+    _btStateSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _handleSecretTap() {
+    final now = DateTime.now();
+
+    // Reset if taps are too slow (1.5s gap)
+    if (_lastTapTime != null &&
+        now.difference(_lastTapTime!).inMilliseconds > 1500) {
+      _tapCount = 0;
+    }
+
+    _lastTapTime = now;
+    _tapCount++;
+
+    if (_tapCount >= _showAtStep && _tapCount < _totalSteps) {
+      int stepsAway = _totalSteps - _tapCount;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("You are $stepsAway steps away from Fallback Mode"),
+          duration: const Duration(milliseconds: 600),
+          // 👇 CHANGED: Removed width and set behavior to fixed for full-width
+          behavior: SnackBarBehavior.fixed,
+        ),
+      );
+    } else if (_tapCount == _totalSteps) {
+      setState(() {
+        _isSecureMode = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Fallback Mode Unlocked ⚠️"),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.fixed, // Consistent full-width look
+        ),
+      );
+    }
+  }
+
   Future<void> _checkPermissionsAndBluetooth() async {
-    // 1. Request all permissions using your class
     bool granted = await AppPermissions.requestAllPermissions(context);
-    if (!granted) return; // User denied something
+    if (!granted) return;
 
-    // 2. Check current BT state
     var state = await FlutterBluePlus.adapterState.first;
-
-    // 3. Auto-turn on (Android Only)
     if (state != BluetoothAdapterState.on && Platform.isAndroid) {
       try {
         await FlutterBluePlus.turnOn();
@@ -88,26 +119,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
   }
 
-  /// Master function to handle auth and fetching keys
   Future<void> _initializeSession() async {
-    // 1. (Optional) Verify Student Biometrics
-    // await _verifyStudent();
-
-    // 2. Fetch the session keys before showing the UI
     await _fetchSessionCredentials();
   }
 
-  // ==========================================
-  // FETCH SESSION CREDENTIALS FROM DJANGO
-  // ==========================================
   Future<void> _fetchSessionCredentials() async {
     String classIdStr = widget.classroomId.toString();
-
-    // Check if we already fetched them to avoid redundant API calls
     if (SessionDataManager.instance.hasCredentials(classIdStr)) {
-      setState(() {
-        _loading = false;
-      });
+      setState(() => _loading = false);
       return;
     }
 
@@ -122,19 +141,13 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-
-        // Save the keys to global memory
         SessionDataManager.instance.saveCredentials(
           classroomId: classIdStr,
           kClass: data['k_class'],
           sessionSeed: data['session_seed'],
-          // FIX: Explicitly convert the integer node_id to a string to prevent type errors
           nodeId: data['node_id'].toString(),
         );
-
-        setState(() {
-          _loading = false;
-        });
+        setState(() => _loading = false);
       } else {
         setState(() {
           _errorMessage = "Failed to get session keys: ${response.body}";
@@ -143,119 +156,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
     } catch (e) {
       setState(() {
-        _errorMessage = "Network Error fetching keys: $e";
+        _errorMessage = "Network Error: $e";
         _loading = false;
-      });
-    }
-  }
-
-  // ==========================================
-  // OLD: BIOMETRIC VERIFICATION (Kept intact)
-  // ==========================================
-  Future<void> _verifyStudent() async {
-    try {
-      bool canCheckBiometrics = await auth.canCheckBiometrics;
-      if (!canCheckBiometrics) {
-        setState(() => _errorMessage = "Device has no fingerprint sensor.");
-        return;
-      }
-
-      bool didAuthenticate = await auth.authenticate(
-        localizedReason: "Authenticate to join attendance session",
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: true,
-        ),
-      );
-
-      if (!didAuthenticate) {
-        setState(() => _errorMessage = "Fingerprint authentication failed.");
-        return;
-      }
-
-      final headers = await TokenHandles.getAuthHeaders();
-      final profileRes = await http.get(
-        Uri.parse("${BaseUrl.value}/user/profile/"),
-        headers: headers,
-      );
-
-      if (profileRes.statusCode != 200) {
-        setState(
-          () => _errorMessage =
-              "Failed to fetch profile: ${profileRes.statusCode}",
-        );
-        return;
-      }
-
-      final profileData = jsonDecode(profileRes.body);
-      final authKeyBackend = profileData['auth_key'];
-      final fingerprintKey = await _generateFingerprintKey();
-
-      if (authKeyBackend != fingerprintKey) {
-        setState(
-          () => _errorMessage =
-              "Fingerprint/password changed or mismatch detected.",
-        );
-        return;
-      }
-    } catch (e) {
-      setState(() => _errorMessage = "Error: $e");
-    }
-  }
-
-  Future<String> _generateFingerprintKey() async {
-    return "dummy_fingerprint_key";
-  }
-
-  // ==========================================
-  // TOGGLE CONFIRMATION DIALOG
-  // ==========================================
-  Future<void> _handleToggleChange(bool newValue) async {
-    // If turning ON secure mode, just do it.
-    if (newValue == true) {
-      setState(() {
-        _isSecureMode = true;
-      });
-      return;
-    }
-
-    // If turning OFF secure mode, ask for confirmation to prevent accidents
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Disable Secure Mode?"),
-        content: const Text(
-          "Are you sure you want to use the fallback attendance method? "
-          "This should only be used if your Bluetooth or Camera is failing.",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false), // Cancel
-            child: const Text("Cancel"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true), // Confirm
-            child: const Text(
-              "Use Fallback",
-              style: TextStyle(color: Colors.red),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      setState(() {
-        _isSecureMode = false;
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    if (_loading)
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
 
     if (_errorMessage != null) {
       return Scaffold(
@@ -267,7 +177,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               Text(
                 _errorMessage!,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.red, fontSize: 16),
+                style: const TextStyle(color: Colors.red),
               ),
               const SizedBox(height: 20),
               ElevatedButton(
@@ -281,58 +191,102 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.classroomName)),
+      backgroundColor: Colors.grey.shade50,
+      appBar: AppBar(
+        title: Text(widget.classroomName),
+        elevation: 0,
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.black,
+      ),
       body: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.symmetric(horizontal: 24.0),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // ==========================================
-            // SECURE MODE TOGGLE UI
+            // SECRET SECURITY STATUS CHIP
             // ==========================================
-            Card(
-              elevation: 2,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: SwitchListTile(
-                title: const Text("Secure BLE Verification"),
-                subtitle: Text(
-                  _isSecureMode
-                      ? (_bluetoothOn
-                            ? "Ready: High Security Mode"
-                            : "Bluetooth is OFF. Please enable.")
-                      : "Fallback Mode (Basic Token Passing)",
-                  style: TextStyle(
-                    color: _isSecureMode
-                        ? (_bluetoothOn ? Colors.green : Colors.red)
-                        : Colors.orange,
-                  ),
+            GestureDetector(
+              onTap: _handleSecretTap,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                padding: const EdgeInsets.symmetric(
+                  vertical: 12,
+                  horizontal: 20,
                 ),
-                value: _isSecureMode,
-                activeColor: Colors.green,
-                onChanged: _handleToggleChange,
+                decoration: BoxDecoration(
+                  color: _isSecureMode ? Colors.white : Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(30),
+                  border: Border.all(
+                    color: _isSecureMode
+                        ? Colors.blue.shade100
+                        : Colors.orange.shade200,
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _isSecureMode
+                          ? Icons.shield_outlined
+                          : Icons.history_edu_rounded,
+                      color: _isSecureMode ? Colors.blue : Colors.orange,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      _isSecureMode
+                          ? "SECURE MODE ACTIVE"
+                          : "FALLBACK MODE ACTIVE",
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.1,
+                        color: _isSecureMode
+                            ? Colors.blue.shade700
+                            : Colors.orange.shade900,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(height: 40),
+
+            const SizedBox(height: 50),
 
             // ==========================================
-            // PASS TOKEN ROUTING
+            // PASS TOKEN ACTION CARD
             // ==========================================
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                backgroundColor: _isSecureMode ? Colors.blue : Colors.orange,
-              ),
+            _buildActionCard(
+              title: _isSecureMode
+                  ? "Pass Token (Secure)"
+                  : "Pass Token (Fallback)",
+              subtitle: _isSecureMode
+                  ? (_bluetoothOn
+                        ? "Ready for BLE proximity check"
+                        : "Turn on Bluetooth to continue")
+                  : "Basic manual verification mode",
+              color: _isSecureMode
+                  ? (_bluetoothOn ? Colors.blue : Colors.red)
+                  : Colors.orange,
+              icon: _isSecureMode
+                  ? Icons.bolt_rounded
+                  : Icons.qr_code_2_rounded,
               onPressed: () {
                 if (_isSecureMode) {
-                  // Route to your new Secure BLE Page AND pass the real classroomId
                   Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (context) => SecurePeerGatewayPage(
-                        classroomId: widget.classroomId, // <-- FIX APPLIED HERE
+                        classroomId: widget.classroomId,
                       ),
                     ),
                   );
@@ -348,18 +302,18 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                   );
                 }
               },
-              child: Text(
-                _isSecureMode ? "Pass Token (Secure)" : "Pass Token (Fallback)",
-                style: const TextStyle(fontSize: 18, color: Colors.white),
-              ),
             ),
 
             const SizedBox(height: 20),
 
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
+            // ==========================================
+            // EXCEPTION LIST CARD
+            // ==========================================
+            _buildActionCard(
+              title: "Add to Exception List",
+              subtitle: "Hardware issues? Notify your teacher",
+              color: Colors.grey.shade700,
+              icon: Icons.error_outline_rounded,
               onPressed: () {
                 Navigator.push(
                   context,
@@ -369,12 +323,81 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                   ),
                 );
               },
-              child: const Text(
-                "Add to Exception List",
-                style: TextStyle(fontSize: 18),
-              ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionCard({
+    required String title,
+    required String subtitle,
+    required Color color,
+    required IconData icon,
+    required VoidCallback onPressed,
+  }) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.08),
+            blurRadius: 15,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  child: Icon(icon, color: color, size: 28),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  color: Colors.grey.shade300,
+                  size: 14,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
