@@ -37,7 +37,7 @@ dependencies:
   barcode_widget: ^2.0.1  # for barcode display
   cryptography: ^2.7.0
   encrypt: ^5.0.3
-  local_auth: ^2.3.0 
+  local_auth: ^3.0.1 
   mobile_scanner: ^6.0.2   # (latest stable version as of now)
   flutter_blue_plus: ^1.36.8
   flutter_ble_peripheral: ^1.2.6
@@ -49,10 +49,11 @@ dependencies:
   intl: ^0.18.1   
   file_picker: ^8.0.0
   firebase_core: ^4.5.0
-  firebase_messaging: ^16.1.2
+  firebase_messaging: ^16.1.2 
   toastification: ^3.0.3
   geolocator: ^14.0.2
   location: ^8.0.1
+  biometric_storage: ^5.0.1
 dev_dependencies: 
   flutter_test:
     sdk: flutter

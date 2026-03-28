@@ -3,6 +3,7 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  biometric_storage
   file_selector_linux
 )
 

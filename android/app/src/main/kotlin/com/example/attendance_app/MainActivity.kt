@@ -10,15 +10,18 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import androidx.annotation.NonNull
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.util.UUID
 import io.flutter.plugins.GeneratedPluginRegistrant 
+import androidx.biometric.BiometricPrompt          // ✅ NEW
+import androidx.biometric.BiometricManager
+import androidx.core.content.ContextCompat  
 
 @SuppressLint("MissingPermission")
-class MainActivity: FlutterActivity() {
+class MainActivity: FlutterFragmentActivity() {
     private val METHOD_CHANNEL = "com.attendance/command"
     private val EVENT_CHANNEL = "com.attendance/events"
 
@@ -64,6 +67,124 @@ class MainActivity: FlutterActivity() {
                         result.error("ERR", "Missing address or payload", null)
                     }
                 }
+            // ✅ NEW: Native biometric prompt — bypasses local_auth plugin activity bug
+                "showBiometricPrompt" -> {
+                    val executor = ContextCompat.getMainExecutor(this)
+                    val biometricPrompt = BiometricPrompt(this, executor,
+                        object : BiometricPrompt.AuthenticationCallback() {
+                            override fun onAuthenticationSucceeded(
+                                authResult: BiometricPrompt.AuthenticationResult
+                            ) {
+                                Handler(Looper.getMainLooper()).post {
+                                    result.success("SUCCESS")
+                                }
+                            }
+                            override fun onAuthenticationError(
+                                errorCode: Int,
+                                errString: CharSequence
+                            ) {
+                                Handler(Looper.getMainLooper()).post {
+                                    result.error("AUTH_ERROR", errString.toString(), errorCode)
+                                }
+                            }
+                            override fun onAuthenticationFailed() {
+                                // Finger not recognized — prompt stays open, do nothing
+                            }
+                        }
+                    )
+                    val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                        .setTitle("Reset Biometric Key")
+                        .setDescription("Scan fingerprint to lock Keystore to current biometrics")
+                        .setNegativeButtonText("Cancel")
+                        .build()
+                    biometricPrompt.authenticate(promptInfo)
+                }
+                // ✅ END NEW
+                
+                "isBiometricAvailable" -> {
+                    val biometricManager = BiometricManager.from(this)
+                    // ✅ FIX: Accept both STRONG and WEAK fingerprint scanners
+                    val canAuthenticate = biometricManager.canAuthenticate(
+                        BiometricManager.Authenticators.BIOMETRIC_STRONG or 
+                        BiometricManager.Authenticators.BIOMETRIC_WEAK
+                    )
+                    
+                    if (canAuthenticate == BiometricManager.BIOMETRIC_SUCCESS) {
+                        result.success(true)
+                    } else {
+                        result.success(false)
+                    }
+                }
+
+                "checkBiometricKey" -> {
+                    try {
+                        val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
+                        keyStore.load(null)
+                        
+                        if (!keyStore.containsAlias("attendance_credentials")) {
+                            // ✅ FIX: Throw an error instead of returning a success string!
+                            result.error("KEY_MISSING", "Key was never created", null)
+                            return@setMethodCallHandler
+                        }
+                        
+                        val privateKey = keyStore.getKey("attendance_credentials", null)
+                        val signature = java.security.Signature.getInstance("SHA256withECDSA")
+                        signature.initSign(privateKey as java.security.PrivateKey)
+                        
+                        result.success("KEY_VALID")
+                    } catch (e: java.security.InvalidKeyException) {
+                        result.error("KEY_INVALIDATED", "Biometric enrollment changed", null)
+                    } catch (e: Exception) {
+                        result.error("KEY_ERR", e.message, null)
+                    }
+                }
+
+                "resetBiometricKey" -> {
+    try {
+        // Step 1: Delete old key from Android Keystore
+        val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
+        keyStore.load(null)
+        if (keyStore.containsAlias("attendance_credentials")) {
+            keyStore.deleteEntry("attendance_credentials")
+            android.util.Log.d("BiometricReset", "Old key deleted from Keystore.")
+        }
+
+        // Step 2: Generate new key pair bound to current biometrics
+        // This key will be PERMANENTLY INVALIDATED if user adds/removes fingerprints
+        val keyPairGenerator = java.security.KeyPairGenerator.getInstance(
+            android.security.keystore.KeyProperties.KEY_ALGORITHM_EC,
+            "AndroidKeyStore"
+        )
+        val keyGenParameterSpec = android.security.keystore.KeyGenParameterSpec.Builder(
+            "attendance_credentials",
+            android.security.keystore.KeyProperties.PURPOSE_SIGN or
+            android.security.keystore.KeyProperties.PURPOSE_VERIFY
+        )
+            .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
+            .setUserAuthenticationRequired(true)
+            .setInvalidatedByBiometricEnrollment(true) // 🔑 THIS is what detects new fingerprints
+            .build()
+
+        keyPairGenerator.initialize(keyGenParameterSpec)
+        keyPairGenerator.generateKeyPair()
+
+        android.util.Log.d("BiometricReset", "New biometric-bound key generated.")
+        result.success("SUCCESS")
+    } catch (e: Exception) {
+        android.util.Log.e("BiometricReset", "Key reset failed: ${e.message}")
+        result.error("KEY_ERR", e.message, null)
+    }
+}
+                "writeKeystoreMarker" -> {
+    try {
+        val prefs = getSharedPreferences("attendance_keystore", MODE_PRIVATE)
+        prefs.edit().putString("key_marker", "keystore_bound_v1").apply()
+        result.success("WRITTEN")
+    } catch (e: Exception) {
+        result.error("WRITE_ERR", e.message, null)
+    }
+}
+
                 else -> result.notImplemented()
             }
         }

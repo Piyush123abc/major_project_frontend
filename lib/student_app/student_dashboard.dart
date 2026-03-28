@@ -1,12 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:attendance_app/global_variable/student_profile.dart';
 import 'package:attendance_app/student_app/absence_proposal/ProposalSelectionPage.dart';
-import 'package:attendance_app/student_app/absence_proposal/absence_proposal_dashboard.dart';
 import 'package:attendance_app/student_app/attendance_records/attendance_record_list.dart';
 import 'package:attendance_app/student_app/attendance_session/attendance_session_dasboard.dart';
 import 'package:attendance_app/student_app/classroom_list/classroom_list.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import '../global_variable/base_url.dart';
 import '../global_variable/token_handles.dart';
@@ -19,38 +20,348 @@ class StudentDashboardPage extends StatefulWidget {
 }
 
 class _StudentDashboardPageState extends State<StudentDashboardPage> {
+  static const _platform = MethodChannel('com.attendance/command');
+
   Map<String, dynamic>? profile;
   List<dynamic> enrollments = [];
-  Map<int, bool> sessionStatus = {}; // cache classroom session status
+  Map<int, bool> sessionStatus = {};
   bool isLoading = true;
+
+  int _secretTapCount = 0;
+  Timer? _tapTimer;
 
   @override
   void initState() {
     super.initState();
     _fetchDashboardData();
-
-    // Catch token changes that happen while the app is open
     FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
       _syncFCMToken();
     });
   }
 
-  // --- Sync FCM Token to Backend ---
+  @override
+  void dispose() {
+    _tapTimer?.cancel();
+    super.dispose();
+  }
+
+  // ─── BACKDOOR ────────────────────────────────────────────────────────────────
+
+  void _handleSecretTap() {
+    _secretTapCount++;
+    _tapTimer?.cancel();
+    _tapTimer = Timer(const Duration(seconds: 2), () {
+      _secretTapCount = 0;
+    });
+
+    final int tapsLeft = 8 - _secretTapCount;
+
+    if (tapsLeft <= 3 && tapsLeft > 0) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Tap $tapsLeft more time(s) to reset Keystore."),
+          duration: const Duration(milliseconds: 500),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else if (_secretTapCount >= 8) {
+      _secretTapCount = 0;
+      _tapTimer?.cancel();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _resetKeystoreToCurrentBiometrics();
+      });
+    }
+  }
+
+  Future<void> _resetKeystoreToCurrentBiometrics() async {
+    debugPrint("🔐 [RESET] Step 1: Method entered.");
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Please scan fingerprint to verify identity..."),
+        backgroundColor: Colors.blueAccent,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
+    try {
+      debugPrint("🔐 [RESET] Step 2: Calling native biometric prompt...");
+      final String authResult = await _platform.invokeMethod(
+        'showBiometricPrompt',
+      );
+      debugPrint("🔐 [RESET]    Native result → $authResult");
+
+      if (authResult != "SUCCESS") {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("❌ Authentication failed."),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      debugPrint(
+        "🔐 [RESET] Step 3: Resetting biometric-bound key via native...",
+      );
+      final String keyResult = await _platform.invokeMethod(
+        'resetBiometricKey',
+      );
+      debugPrint("🔐 [RESET]    Key reset result → $keyResult");
+      debugPrint("🔐 [RESET] ✅ Done. Key is now bound to current biometrics.");
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "✅ Keystore successfully locked to current biometrics.",
+          ),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 4),
+        ),
+      );
+    } on PlatformException catch (e) {
+      debugPrint("🔐 [RESET] ❌ PlatformException: ${e.code} - ${e.message}");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("❌ Failed: ${e.message}"),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e, stack) {
+      debugPrint("🔐 [RESET] ❌ Unexpected: $e\n$stack");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("❌ Keystore reset failed: $e"),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  // ─── SESSION ENTRY ────────────────────────────────────────────────────────────
+
+  Future<void> _onEnterSessionPressed(Map<String, dynamic> enrollment) async {
+    if (!mounted) return;
+
+    // ─── STEP 0: CHECK IF DEVICE HAS BIOMETRICS ───────────────────────────
+    bool hasBiometrics = false;
+    try {
+      hasBiometrics = await _platform.invokeMethod('isBiometricAvailable');
+    } catch (e) {
+      hasBiometrics = false;
+    }
+
+    // IF NO HARDWARE -> SMOOTH PASS DIRECTLY TO SESSION
+    if (!hasBiometrics) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "No biometric hardware detected. Bypassing local check...",
+          ),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 2),
+        ),
+      );
+
+      _navigateToSession(enrollment);
+      return; // Stop here, skip all security checks
+    }
+    // ───────────────────────────────────────────────────────────────────────
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Checking Security Status..."),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
+    bool keyInvalidated = false;
+
+    // STEP 1: Check Keystore Validity
+    try {
+      debugPrint("🔒 [SESSION] Checking keystore key validity...");
+      await _platform.invokeMethod('checkBiometricKey');
+    } on PlatformException catch (e) {
+      if (e.code == "KEY_INVALIDATED") {
+        debugPrint("🔒 [SESSION] Key Invalidated (Biometrics changed).");
+        keyInvalidated = true;
+      } else {
+        // Stop entirely if there is a different hardware error (like KEY_MISSING)
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("❌ Security Check Error: ${e.message}"),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("❌ Unexpected Error: $e"),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    // STEP 2: Show Warning Dialog if Fingerprints Changed
+    if (keyInvalidated && mounted) {
+      await showDialog(
+        context: context,
+        barrierDismissible: false, // Forces user to tap OK to proceed
+        builder: (BuildContext dialogContext) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: const Row(
+              children: [
+                Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.redAccent,
+                  size: 28,
+                ),
+                SizedBox(width: 8),
+                Text("Security Warning", style: TextStyle(fontSize: 20)),
+              ],
+            ),
+            content: const Text(
+              "Biometric settings on this device have been changed.\n\n"
+              "Normally, this would block your access. Since this is a demo, you may proceed after verifying your fingerprint.",
+              style: TextStyle(fontSize: 16),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text(
+                  "OK, I Understand",
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ],
+          );
+        },
+      );
+    }
+
+    if (!mounted) return;
+
+    // STEP 3: Always Request Biometric Auth (Even if key was invalid)
+    try {
+      debugPrint("🔒 [SESSION] Requesting biometric auth...");
+      final String authResult = await _platform.invokeMethod(
+        'showBiometricPrompt',
+      );
+      debugPrint("🔒 [SESSION]    Auth result → $authResult");
+
+      if (authResult != "SUCCESS") {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("❌ Authentication failed or cancelled."),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return; // Block Entry
+      }
+
+      // Identity Verified Successfully
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("✅ Identity Verified!"),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("❌ Authentication failed: ${e.message}"),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return; // Block Entry
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("❌ Unexpected Biometric Error: $e"),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return; // Block Entry
+    }
+
+    // STEP 4: Navigate to Session Page
+    _navigateToSession(enrollment);
+  }
+
+  // Helper method extracted to avoid repeating navigation code
+  Future<void> _navigateToSession(Map<String, dynamic> enrollment) async {
+    final classroomId = enrollment["id"];
+    final classroomName = enrollment["name"] ?? "Class";
+    final classroomCode = enrollment["code"] ?? "N/A";
+
+    if (mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AttendanceSessionPage(
+            classroomId: classroomId,
+            classroomName: classroomName,
+            classroomCode: classroomCode,
+          ),
+        ),
+      );
+    }
+    _fetchDashboardData(showLoading: false);
+  }
+
+  // ─── REST OF METHODS ─────────────────────────────────────────────────────────
+
   Future<void> _syncFCMToken() async {
     try {
       final headers = await TokenHandles.getAuthHeaders();
       if (headers.isEmpty) return;
-
       String? fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken == null) return;
-
       final url = Uri.parse("${BaseUrl.value}/user/profile/update-fcm/");
       final response = await http.post(
         url,
         headers: {...headers, "Content-Type": "application/json"},
         body: jsonEncode({"fcm_token": fcmToken}),
       );
-
       if (response.statusCode == 200) {
         debugPrint("✅ Student FCM Token synced successfully.");
       } else {
@@ -61,15 +372,11 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     }
   }
 
-  // --- HTTP GET with Authorization ---
   Future<http.Response> _getWithAuth(String url) async {
     final headers = await TokenHandles.getAuthHeaders();
     return http.get(Uri.parse(url), headers: headers);
   }
 
-  // --- Fetch Profile and Enrollments ---
-  // Added a showLoading parameter so we can refresh silently in the background
-  // when navigating back from a session, without blanking the screen.
   Future<void> _fetchDashboardData({bool showLoading = true}) async {
     if (showLoading) setState(() => isLoading = true);
     try {
@@ -77,29 +384,21 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
       final enrollmentsRes = await _getWithAuth(
         "${BaseUrl.value}/user/student/enrollments/",
       );
-
       if (profileRes.statusCode == 200 && enrollmentsRes.statusCode == 200) {
         final parsedProfile = jsonDecode(profileRes.body);
         final parsedEnrollments = jsonDecode(enrollmentsRes.body);
-
-        // Store globally
         GlobalStudentProfile.setProfile(
           StudentProfile.fromJwtPayload(parsedProfile),
         );
-
         if (mounted) {
           setState(() {
             profile = parsedProfile;
             enrollments = parsedEnrollments;
           });
         }
-
         _syncFCMToken();
-
-        // fetch session status for each classroom
         for (var enrollment in parsedEnrollments) {
-          final classroomId = enrollment["id"];
-          _fetchSessionStatus(classroomId);
+          _fetchSessionStatus(enrollment["id"]);
         }
       } else {
         if (mounted) {
@@ -124,7 +423,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     }
   }
 
-  // --- Fetch Classroom Session Status ---
   Future<void> _fetchSessionStatus(int classroomId) async {
     try {
       final res = await _getWithAuth(
@@ -141,7 +439,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     } catch (_) {}
   }
 
-  // --- Navigation Functions (Updated to await and refresh) ---
   Future<void> _onEnrollMorePressed() async {
     await Navigator.push(
       context,
@@ -166,25 +463,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     _fetchDashboardData(showLoading: false);
   }
 
-  Future<void> _onEnterSessionPressed(Map<String, dynamic> enrollment) async {
-    final classroomId = enrollment["id"];
-    final classroomName = enrollment["name"] ?? "Class";
-    final classroomCode = enrollment["code"] ?? "N/A";
-
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => AttendanceSessionPage(
-          classroomId: classroomId,
-          classroomName: classroomName,
-          classroomCode: classroomCode,
-        ),
-      ),
-    );
-    // Refresh silently when returning so stale "active" sessions disappear
-    _fetchDashboardData(showLoading: false);
-  }
-
   Future<void> _onAbsenceProposalPressed() async {
     await Navigator.push(
       context,
@@ -193,9 +471,10 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     _fetchDashboardData(showLoading: false);
   }
 
+  // ─── BUILD ────────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    // Sort enrollments: Active sessions at the top
     final sortedEnrollments = List<dynamic>.from(enrollments)
       ..sort((a, b) {
         final bool aActive = sessionStatus[a["id"]] ?? false;
@@ -206,8 +485,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
       });
 
     return Scaffold(
-      backgroundColor:
-          Colors.grey[50], // Slightly lighter background for contrast
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
         title: const Text(
           "Student Dashboard",
@@ -234,7 +512,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                   vertical: 12,
                 ),
                 children: [
-                  // --- Modern Profile Section ---
                   if (profile != null)
                     Container(
                       decoration: BoxDecoration(
@@ -256,19 +533,22 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                         padding: const EdgeInsets.all(20.0),
                         child: Row(
                           children: [
-                            CircleAvatar(
-                              radius: 30,
-                              backgroundColor: Colors.white,
-                              child: Text(
-                                profile!['username']
-                                        ?.toString()
-                                        .substring(0, 1)
-                                        .toUpperCase() ??
-                                    "U",
-                                style: TextStyle(
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.blue.shade700,
+                            GestureDetector(
+                              onTap: _handleSecretTap,
+                              child: CircleAvatar(
+                                radius: 30,
+                                backgroundColor: Colors.white,
+                                child: Text(
+                                  profile!['username']
+                                          ?.toString()
+                                          .substring(0, 1)
+                                          .toUpperCase() ??
+                                      "U",
+                                  style: TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.blue.shade700,
+                                  ),
                                 ),
                               ),
                             ),
@@ -310,7 +590,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
 
                   const SizedBox(height: 16),
 
-                  // --- Absence Proposal Button ---
                   Card(
                     elevation: 2,
                     shape: RoundedRectangleBorder(
@@ -356,7 +635,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
 
                   const SizedBox(height: 24),
 
-                  // --- Enrollments Section Header ---
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -392,7 +670,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                       ),
                     ),
 
-                  // --- Classroom Cards ---
                   ...sortedEnrollments.map((enrollment) {
                     final classroomId = enrollment["id"];
                     final subject = enrollment["name"] ?? "Class";
@@ -407,7 +684,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                           : null,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
-                        // Highlight active classes with a green border
                         side: isActive
                             ? const BorderSide(color: Colors.green, width: 1.5)
                             : BorderSide(color: Colors.grey.shade200),
@@ -433,7 +709,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                                       ),
                                     ),
                                   ),
-                                  // Active Status Badge
                                   Container(
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 10,
