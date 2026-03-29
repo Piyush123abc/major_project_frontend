@@ -60,7 +60,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
       ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("Tap $tapsLeft more time(s) to reset Keystore."),
+          content: Text("Tap $tapsLeft more time(s) to access Admin Sync."),
           duration: const Duration(milliseconds: 500),
           behavior: SnackBarBehavior.floating,
         ),
@@ -75,77 +75,130 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   Future<void> _resetKeystoreToCurrentBiometrics() async {
-    debugPrint("🔐 [RESET] Step 1: Method entered.");
+    debugPrint("🔐 [SUPER RESET] Step 1: Method entered.");
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).clearSnackBars();
+    // 1. Show Dialog for Admin Override Password first
+    final TextEditingController passwordController = TextEditingController();
+    bool isPasswordSubmitted = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text("🚨 Admin Device Sync"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "This will bind this physical device to your account and reset local biometrics.",
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: passwordController,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: "Admin Password"),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Cancel"),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () {
+                isPasswordSubmitted = true;
+                Navigator.pop(context);
+              },
+              child: const Text(
+                "Sync Device",
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!isPasswordSubmitted || passwordController.text.isEmpty) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text("Please scan fingerprint to verify identity..."),
+        content: Text("Please scan fingerprint to generate new keys..."),
         backgroundColor: Colors.blueAccent,
         behavior: SnackBarBehavior.floating,
       ),
     );
 
     try {
-      debugPrint("🔐 [RESET] Step 2: Calling native biometric prompt...");
+      // 2. Native Biometric Prompt to authorize the reset
+      debugPrint("🔐 [SUPER RESET] Step 2: Calling native biometric prompt...");
       final String authResult = await _platform.invokeMethod(
         'showBiometricPrompt',
       );
-      debugPrint("🔐 [RESET]    Native result → $authResult");
+      if (authResult != "SUCCESS") throw Exception("Biometric Auth Failed");
 
-      if (authResult != "SUCCESS") {
+      // 3. Fix the LOCAL Biometric Key (For Attendance Sessions)
+      debugPrint("🔐 [SUPER RESET] Step 3: Resetting local biometric keys...");
+      final String localResetResult = await _platform.invokeMethod(
+        'resetBiometricKey',
+      );
+      if (localResetResult != "SUCCESS")
+        throw Exception("Local Keystore Reset Failed");
+
+      // 4. Generate the SILENT Device Binding Key (For Django Login Verification)
+      debugPrint(
+        "🔐 [SUPER RESET] Step 4: Generating silent device binding key...",
+      );
+      final String newPublicKey = await _platform.invokeMethod(
+        'generateDeviceBindingKey',
+      );
+      if (newPublicKey.startsWith("Error")) throw Exception(newPublicKey);
+
+      // 5. Send the SILENT Public Key to Django Backend securely via JWT
+      debugPrint("🔐 [SUPER RESET] Step 5: Syncing with Django backend...");
+      final headers = await TokenHandles.getAuthHeaders();
+
+      // NOTE: Make sure this URL exactly matches your Django routing setup
+      final url = Uri.parse("${BaseUrl.value}/user/student/device/bind/");
+
+      final response = await http.post(
+        url,
+        headers: {...headers, "Content-Type": "application/json"},
+        body: jsonEncode({
+          "public_key": newPublicKey,
+          "admin_password": passwordController.text.trim(),
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("❌ Authentication failed."),
-            backgroundColor: Colors.red,
+          SnackBar(
+            content: Text(
+              "✅ ${data['message'] ?? 'Device synced successfully!'}",
+            ),
+            backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
           ),
         );
-        return;
+      } else {
+        throw Exception(data['error'] ?? "Server rejected the key.");
       }
-
-      debugPrint(
-        "🔐 [RESET] Step 3: Resetting biometric-bound key via native...",
-      );
-      final String keyResult = await _platform.invokeMethod(
-        'resetBiometricKey',
-      );
-      debugPrint("🔐 [RESET]    Key reset result → $keyResult");
-      debugPrint("🔐 [RESET] ✅ Done. Key is now bound to current biometrics.");
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).clearSnackBars();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            "✅ Keystore successfully locked to current biometrics.",
-          ),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-          duration: Duration(seconds: 4),
-        ),
-      );
-    } on PlatformException catch (e) {
-      debugPrint("🔐 [RESET] ❌ PlatformException: ${e.code} - ${e.message}");
+    } catch (e) {
+      debugPrint("🔐 [SUPER RESET] ❌ Failed: $e");
       if (!mounted) return;
       ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("❌ Failed: ${e.message}"),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } catch (e, stack) {
-      debugPrint("🔐 [RESET] ❌ Unexpected: $e\n$stack");
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).clearSnackBars();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("❌ Keystore reset failed: $e"),
+          content: Text("❌ Sync Failed: $e"),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),

@@ -1,10 +1,11 @@
-// lib/student/student_register_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // ✅ Added for MethodChannel
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:cryptography/cryptography.dart'; // ✅ For backend keypair
 import '../../../global_variable/base_url.dart';
+import '../../../global_variable/token_handles.dart';
+import '../../../global_variable/student_profile.dart';
+import 'package:attendance_app/student_app/student_dashboard.dart'; // Make sure this path is correct
 
 class StudentRegisterPage extends StatefulWidget {
   const StudentRegisterPage({super.key});
@@ -14,7 +15,7 @@ class StudentRegisterPage extends StatefulWidget {
 }
 
 class _StudentRegisterPageState extends State<StudentRegisterPage> {
-  // ✅ Setup the platform channel to communicate with Kotlin locally
+  // MethodChannel to communicate with Native Android Keystore
   static const _platform = MethodChannel('com.attendance/command');
 
   final _formKey = GlobalKey<FormState>();
@@ -25,32 +26,19 @@ class _StudentRegisterPageState extends State<StudentRegisterPage> {
 
   bool _isLoading = false;
 
-  // ✅ Generate a new software keypair for the backend payload
-  Future<String> _generatePublicKey() async {
-    final algorithm = Ed25519();
-    final keyPair = await algorithm.newKeyPair();
-
-    // Extract and encode public key
-    final publicKey = await keyPair.extractPublicKey();
-    final rawBytes = publicKey.bytes;
-    return base64Encode(rawBytes);
-  }
-
   Future<void> _registerStudent() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
 
     bool hasBiometrics = false;
+    String base64PublicKey = "";
 
     try {
       // ─── STEP 1: LOCAL HARDWARE SECURITY ────────────────────────────
-
-      // Ask Native OS if the phone actually has a fingerprint scanner
       try {
         hasBiometrics = await _platform.invokeMethod('isBiometricAvailable');
       } catch (e) {
-        // Failsafe if an old phone doesn't understand the command
         hasBiometrics = false;
       }
 
@@ -59,7 +47,7 @@ class _StudentRegisterPageState extends State<StudentRegisterPage> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                "Please scan fingerprint to set up local security...", // Softer language
+                "Please scan fingerprint to set up local security...",
               ),
               backgroundColor: Colors.blueAccent,
             ),
@@ -71,145 +59,149 @@ class _StudentRegisterPageState extends State<StudentRegisterPage> {
         );
 
         if (authResult != "SUCCESS") {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  "❌ Fingerprint authentication failed. Registration aborted.",
-                ),
-                backgroundColor: Colors.red,
-              ),
-            );
-            setState(() => _isLoading = false);
-          }
-          return; // Stop registration if they cancel the prompt
+          throw Exception("Fingerprint authentication failed or was canceled.");
         }
 
-        // Lock the Android Keystore to current biometrics locally
+        // Lock the Android Keystore to current biometrics locally (For Attendance)
         await _platform.invokeMethod('resetBiometricKey');
-      } else {
-        // Graceful skip for older phones without biometric hardware
-        debugPrint(
-          "No biometric hardware detected. Skipping local Keystore lock.",
-        );
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                "No fingerprint sensor detected. Proceeding with standard registration...",
-              ),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 2),
-            ),
-          );
-        }
       }
-      // ────────────────────────────────────────────────────────────────
 
-      // ─── STEP 2: BACKEND REGISTRATION ───────────────────────────────
+      // ─── STEP 2: GENERATE SILENT DEVICE BINDING KEY ─────────────────
+      // Generate the silent key for backend login verification
+      base64PublicKey = await _platform.invokeMethod(
+        'generateDeviceBindingKey',
+      );
+      if (base64PublicKey.startsWith("Error")) {
+        throw Exception(base64PublicKey);
+      }
 
-      // Generate software fingerprint key for backend compatibility
-      final fingerprintKey = await _generatePublicKey();
-
-      final url = Uri.parse("${BaseUrl.value}/user/register/student/");
-      final body = jsonEncode({
-        "username": _usernameController.text,
-        "password": _passwordController.text,
-        "uid": _uidController.text,
-        "branch": _branchController.text,
-        "fingerprint_key": fingerprintKey, // send backend key
+      // ─── STEP 3: BACKEND REGISTRATION ───────────────────────────────
+      final regUrl = Uri.parse("${BaseUrl.value}/user/register/student/");
+      final regBody = jsonEncode({
+        "username": _usernameController.text.trim(),
+        "password": _passwordController.text.trim(),
+        "uid": _uidController.text.trim(),
+        "branch": _branchController.text.trim(),
+        "public_key": base64PublicKey, // ✅ Send the device key immediately!
       });
 
-      final response = await http.post(
-        url,
+      final regResponse = await http.post(
+        regUrl,
         headers: {"Content-Type": "application/json"},
-        body: body,
+        body: regBody,
       );
 
-      if (response.statusCode == 201 || response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        if (mounted) {
-          showDialog(
-            context: context,
-            barrierDismissible: false, // Force them to press OK
-            builder: (context) => AlertDialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              icon: const Icon(
-                Icons.check_circle,
-                color: Colors.green,
-                size: 48,
-              ),
-              // ✅ FittedBox guarantees the text will shrink to fit the screen instead of overflowing
-              title: const FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  "Registration Successful 🎉",
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              content: SingleChildScrollView(
-                child: SizedBox(
-                  width: double.maxFinite,
-                  child: Text(
-                    hasBiometrics
-                        ? "Your account has been registered and local device security is configured.\n\nDetails: $data"
-                        : "Your account has been registered.\n\n(Note: Local hardware security was skipped as this device lacks a fingerprint scanner.)\n\nDetails: $data",
-                    style: const TextStyle(fontSize: 15, height: 1.4),
-                  ),
-                ),
-              ),
-              actionsAlignment: MainAxisAlignment.center,
-              actions: [
-                ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(context); // close dialog
-                    Navigator.pop(context); // go back
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 32,
-                      vertical: 12,
-                    ),
-                  ),
-                  child: const Text(
-                    "OK",
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                  ),
-                ),
-              ],
-            ),
-          );
-        }
+      if (regResponse.statusCode == 201 || regResponse.statusCode == 200) {
+        // Registration successful! Now let's Auto-Login.
+        await _autoLoginAndNavigate();
       } else {
-        final error = jsonDecode(response.body);
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text("Error: $error")));
-        }
-      }
-    } on PlatformException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("❌ Hardware Security Error: ${e.message}"),
-            backgroundColor: Colors.red,
-          ),
-        );
+        final error = jsonDecode(regResponse.body);
+        throw Exception(error.toString());
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Something went wrong: $e")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("❌ Error: $e"),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // ─── STEP 4: AUTO-LOGIN PROCESS ───────────────────────────────────
+  Future<void> _autoLoginAndNavigate() async {
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text.trim();
+
+    try {
+      // 1. Get Challenge
+      final challengeRes = await http.post(
+        Uri.parse("${BaseUrl.value}/user/student/login/challenge/"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"username": username}),
+      );
+      if (challengeRes.statusCode != 200) throw Exception("Challenge failed.");
+
+      final String challengeString = jsonDecode(challengeRes.body)['challenge'];
+
+      // 2. Sign Challenge Silently
+      final String signatureHex = await _platform.invokeMethod(
+        'signDeviceChallenge',
+        {'challenge': challengeString},
+      );
+      if (signatureHex.startsWith("Error")) throw Exception(signatureHex);
+
+      // 3. Verify Login
+      final verifyRes = await http.post(
+        Uri.parse("${BaseUrl.value}/user/student/login/verify/"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "username": username,
+          "password": password,
+          "signature": signatureHex,
+        }),
+      );
+
+      if (verifyRes.statusCode == 200) {
+        final data = jsonDecode(verifyRes.body);
+        TokenHandles.setTokens(data["access"], data["refresh"]);
+
+        // 4. Fetch Profile
+        final profileHeaders = await TokenHandles.getAuthHeaders();
+        final profileRes = await http.get(
+          Uri.parse("${BaseUrl.value}/user/profile/"),
+          headers: profileHeaders,
+        );
+
+        if (profileRes.statusCode == 200) {
+          final profileData = jsonDecode(profileRes.body);
+          GlobalStudentProfile.setProfile(
+            StudentProfile(
+              id: profileData['id'],
+              uid: profileData['uid'],
+              username: profileData['username'],
+              branch: profileData['branch'] ?? '',
+              authKey: profileData['auth_key'],
+            ),
+          );
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("✅ Registration Successful! Device Secured."),
+                backgroundColor: Colors.green,
+              ),
+            );
+
+            // Direct route to Dashboard!
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (_) => const StudentDashboardPage()),
+              (route) => false, // Clears the navigation stack
+            );
+          }
+        }
+      } else {
+        throw Exception("Auto-login verification failed.");
+      }
+    } catch (e) {
+      // If auto-login fails for some weird reason, drop them at the login screen
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              "Registered successfully, but auto-login failed. Please log in manually.",
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        Navigator.pop(context); // Go back to login screen
+      }
     }
   }
 
@@ -251,8 +243,13 @@ class _StudentRegisterPageState extends State<StudentRegisterPage> {
                       onPressed: _registerStudent,
                       style: ElevatedButton.styleFrom(
                         minimumSize: const Size.fromHeight(50),
+                        backgroundColor: Colors.blueAccent,
+                        foregroundColor: Colors.white,
                       ),
-                      child: const Text("Register"),
+                      child: const Text(
+                        "Register & Secure Device",
+                        style: TextStyle(fontSize: 16),
+                      ),
                     ),
             ],
           ),

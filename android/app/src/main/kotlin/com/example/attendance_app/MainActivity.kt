@@ -16,7 +16,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.util.UUID
 import io.flutter.plugins.GeneratedPluginRegistrant 
-import androidx.biometric.BiometricPrompt          // ✅ NEW
+import androidx.biometric.BiometricPrompt
 import androidx.biometric.BiometricManager
 import androidx.core.content.ContextCompat  
 
@@ -35,7 +35,6 @@ class MainActivity: FlutterFragmentActivity() {
     private var currentServiceUuid: UUID? = null
 
 
-    
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -56,7 +55,6 @@ class MainActivity: FlutterFragmentActivity() {
                     result.success("Server Stopped")
                 }
                 "sendEcho" -> {
-                    // NEW: Flutter calls this to push the 16-byte response back to the Scanner
                     val address = call.argument<String>("address")
                     val hexStr = call.argument<String>("payload")
                     
@@ -67,7 +65,6 @@ class MainActivity: FlutterFragmentActivity() {
                         result.error("ERR", "Missing address or payload", null)
                     }
                 }
-            // ✅ NEW: Native biometric prompt — bypasses local_auth plugin activity bug
                 "showBiometricPrompt" -> {
                     val executor = ContextCompat.getMainExecutor(this)
                     val biometricPrompt = BiometricPrompt(this, executor,
@@ -88,7 +85,6 @@ class MainActivity: FlutterFragmentActivity() {
                                 }
                             }
                             override fun onAuthenticationFailed() {
-                                // Finger not recognized — prompt stays open, do nothing
                             }
                         }
                     )
@@ -99,11 +95,9 @@ class MainActivity: FlutterFragmentActivity() {
                         .build()
                     biometricPrompt.authenticate(promptInfo)
                 }
-                // ✅ END NEW
                 
                 "isBiometricAvailable" -> {
                     val biometricManager = BiometricManager.from(this)
-                    // ✅ FIX: Accept both STRONG and WEAK fingerprint scanners
                     val canAuthenticate = biometricManager.canAuthenticate(
                         BiometricManager.Authenticators.BIOMETRIC_STRONG or 
                         BiometricManager.Authenticators.BIOMETRIC_WEAK
@@ -122,7 +116,6 @@ class MainActivity: FlutterFragmentActivity() {
                         keyStore.load(null)
                         
                         if (!keyStore.containsAlias("attendance_credentials")) {
-                            // ✅ FIX: Throw an error instead of returning a success string!
                             result.error("KEY_MISSING", "Key was never created", null)
                             return@setMethodCallHandler
                         }
@@ -140,50 +133,59 @@ class MainActivity: FlutterFragmentActivity() {
                 }
 
                 "resetBiometricKey" -> {
-    try {
-        // Step 1: Delete old key from Android Keystore
-        val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
-        keyStore.load(null)
-        if (keyStore.containsAlias("attendance_credentials")) {
-            keyStore.deleteEntry("attendance_credentials")
-            android.util.Log.d("BiometricReset", "Old key deleted from Keystore.")
-        }
+                    try {
+                        val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
+                        keyStore.load(null)
+                        if (keyStore.containsAlias("attendance_credentials")) {
+                            keyStore.deleteEntry("attendance_credentials")
+                            android.util.Log.d("BiometricReset", "Old key deleted from Keystore.")
+                        }
 
-        // Step 2: Generate new key pair bound to current biometrics
-        // This key will be PERMANENTLY INVALIDATED if user adds/removes fingerprints
-        val keyPairGenerator = java.security.KeyPairGenerator.getInstance(
-            android.security.keystore.KeyProperties.KEY_ALGORITHM_EC,
-            "AndroidKeyStore"
-        )
-        val keyGenParameterSpec = android.security.keystore.KeyGenParameterSpec.Builder(
-            "attendance_credentials",
-            android.security.keystore.KeyProperties.PURPOSE_SIGN or
-            android.security.keystore.KeyProperties.PURPOSE_VERIFY
-        )
-            .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
-            .setUserAuthenticationRequired(true)
-            .setInvalidatedByBiometricEnrollment(true) // 🔑 THIS is what detects new fingerprints
-            .build()
+                        val keyPairGenerator = java.security.KeyPairGenerator.getInstance(
+                            android.security.keystore.KeyProperties.KEY_ALGORITHM_EC,
+                            "AndroidKeyStore"
+                        )
+                        val keyGenParameterSpec = android.security.keystore.KeyGenParameterSpec.Builder(
+                            "attendance_credentials",
+                            android.security.keystore.KeyProperties.PURPOSE_SIGN or
+                            android.security.keystore.KeyProperties.PURPOSE_VERIFY
+                        )
+                            .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
+                            .setUserAuthenticationRequired(true)
+                            .setInvalidatedByBiometricEnrollment(true)
+                            .build()
 
-        keyPairGenerator.initialize(keyGenParameterSpec)
-        keyPairGenerator.generateKeyPair()
+                        keyPairGenerator.initialize(keyGenParameterSpec)
+                        keyPairGenerator.generateKeyPair()
 
-        android.util.Log.d("BiometricReset", "New biometric-bound key generated.")
-        result.success("SUCCESS")
-    } catch (e: Exception) {
-        android.util.Log.e("BiometricReset", "Key reset failed: ${e.message}")
-        result.error("KEY_ERR", e.message, null)
-    }
-}
+                        android.util.Log.d("BiometricReset", "New biometric-bound key generated.")
+                        result.success("SUCCESS")
+                    } catch (e: Exception) {
+                        android.util.Log.e("BiometricReset", "Key reset failed: ${e.message}")
+                        result.error("KEY_ERR", e.message, null)
+                    }
+                }
+
                 "writeKeystoreMarker" -> {
-    try {
-        val prefs = getSharedPreferences("attendance_keystore", MODE_PRIVATE)
-        prefs.edit().putString("key_marker", "keystore_bound_v1").apply()
-        result.success("WRITTEN")
-    } catch (e: Exception) {
-        result.error("WRITE_ERR", e.message, null)
-    }
-}
+                    try {
+                        val prefs = getSharedPreferences("attendance_keystore", MODE_PRIVATE)
+                        prefs.edit().putString("key_marker", "keystore_bound_v1").apply()
+                        result.success("WRITTEN")
+                    } catch (e: Exception) {
+                        result.error("WRITE_ERR", e.message, null)
+                    }
+                }
+
+                "generateDeviceBindingKey" -> {
+                    val pubKey = generateDeviceBindingKey()
+                    result.success(pubKey)
+                }
+
+                "signDeviceChallenge" -> {
+                    val challenge = call.argument<String>("challenge") ?: ""
+                    val signatureHex = signDeviceChallenge(challenge)
+                    result.success(signatureHex)
+                }
 
                 else -> result.notImplemented()
             }
@@ -216,12 +218,10 @@ class MainActivity: FlutterFragmentActivity() {
         
         val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         
-        // 1. Write Pipe (Scanner sends the AES Challenge here)
         val writeChar = BluetoothGattCharacteristic(CHAR_UUID_WRITE, 
             BluetoothGattCharacteristic.PROPERTY_WRITE, 
             BluetoothGattCharacteristic.PERMISSION_WRITE)
             
-        // 2. Notify Pipe (Host pushes the AES Echo back here)
         val echoChar = BluetoothGattCharacteristic(CHAR_UUID_ECHO, 
             BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ, 
             BluetoothGattCharacteristic.PERMISSION_READ)
@@ -269,10 +269,8 @@ class MainActivity: FlutterFragmentActivity() {
         bluetoothGattServer?.close()
     }
 
-    // --- NEW: Function to push data back to the Scanner ---
     private fun sendEchoToClient(deviceAddress: String, hexPayload: String): Boolean {
         try {
-            // Convert Hex String back to Byte Array
             val bytes = hexPayload.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             
             val device = bluetoothManager?.adapter?.getRemoteDevice(deviceAddress)
@@ -291,15 +289,12 @@ class MainActivity: FlutterFragmentActivity() {
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
-        
-        // Handle Client Subscribing to Echo updates
         override fun onDescriptorWriteRequest(device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor, preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray) {
             if (responseNeeded) {
                 bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
             }
         }
 
-        // Handle Incoming Challenge
         override fun onCharacteristicWriteRequest(
             device: BluetoothDevice,
             requestId: Int,
@@ -311,21 +306,65 @@ class MainActivity: FlutterFragmentActivity() {
         ) {
             super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value)
             
-            // 1. INSTANT ACKNOWLEDGEMENT (This is what stops the Scanner's RTT Stopwatch)
             if (responseNeeded) {
                 bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
             }
 
             if (characteristic.uuid == CHAR_UUID_WRITE) {
-                // 2. Convert raw AES bytes to Hex String to pass over the platform channel safely
                 val hexString = value.joinToString("") { "%02X".format(it) }
                 val macAddress = device.address
 
                 Handler(Looper.getMainLooper()).post {
-                    // Send to Flutter format: "CHALLENGE:[MAC_ADDRESS]:[HEX_PAYLOAD]"
                     eventSink?.success("CHALLENGE:$macAddress:$hexString")
                 }
             }
         }
     }
+
+    // ==========================================
+    // ✅ ADDED MISSING FUNCTIONS HERE
+    // ==========================================
+    private fun generateDeviceBindingKey(): String {
+    try {
+        val keyPairGenerator = java.security.KeyPairGenerator.getInstance(
+            android.security.keystore.KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore"
+        )
+        val parameterSpec = android.security.keystore.KeyGenParameterSpec.Builder(
+            "device_binding_key",
+            android.security.keystore.KeyProperties.PURPOSE_SIGN or
+            android.security.keystore.KeyProperties.PURPOSE_VERIFY
+        )
+        .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
+        // ✅ Use P-256 — this is what Keystore actually supports
+        .setAlgorithmParameterSpec(java.security.spec.ECGenParameterSpec("secp256r1"))
+        .build()
+
+        keyPairGenerator.initialize(parameterSpec)
+        val keyPair = keyPairGenerator.generateKeyPair()
+
+        return android.util.Base64.encodeToString(keyPair.public.encoded, android.util.Base64.NO_WRAP)
+    } catch (e: Exception) {
+        return "Error: ${e.message}"
+    }
+}
+
+    private fun signDeviceChallenge(challenge: String): String {
+    try {
+        val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
+        keyStore.load(null)
+
+        val privateKey = keyStore.getKey("device_binding_key", null) as? java.security.PrivateKey
+            ?: return "Error: Key not found. Please bind device first."
+
+        // ✅ Use SHA256withECDSA to match the key type
+        val signature = java.security.Signature.getInstance("SHA256withECDSA")
+        signature.initSign(privateKey)
+        signature.update(challenge.toByteArray(Charsets.UTF_8))
+        val sigBytes = signature.sign()
+
+        return sigBytes.joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) {
+        return "Error: ${e.message}"
+    }
+}
 }
