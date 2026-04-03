@@ -1,13 +1,54 @@
+import 'dart:async'; // <-- ADDED for StreamSubscription
+import 'package:firebase_messaging/firebase_messaging.dart'; // <-- ADDED for FCM
 import 'package:attendance_app/global_variable/student_profile.dart';
 import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_qr_server.dart';
 import 'package:attendance_app/student_app/attendance_session/new_token_passing.dart/secure_version/secure_scanner_transmitter.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-class SecurePeerGatewayPage extends StatelessWidget {
+// CHANGED: Converted to StatefulWidget to hold the FCM Listener state
+class SecurePeerGatewayPage extends StatefulWidget {
   final int classroomId;
 
   const SecurePeerGatewayPage({super.key, required this.classroomId});
+
+  @override
+  State<SecurePeerGatewayPage> createState() => _SecurePeerGatewayPageState();
+}
+
+class _SecurePeerGatewayPageState extends State<SecurePeerGatewayPage> {
+  // --- FCM State Variables ---
+  bool _isConnectedToMasterNode = false;
+  StreamSubscription<RemoteMessage>? _fcmSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenForConnectionVerification();
+  }
+
+  // --- FCM Listener Logic ---
+  void _listenForConnectionVerification() {
+    _fcmSubscription = FirebaseMessaging.onMessage.listen((
+      RemoteMessage message,
+    ) {
+      if (message.data['type'] == 'connection_verified' &&
+          message.data['classroom_id'] == widget.classroomId.toString()) {
+        if (mounted) {
+          setState(() {
+            _isConnectedToMasterNode = true;
+          });
+          HapticFeedback.mediumImpact(); // Nice little physical tap when secured!
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _fcmSubscription?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,7 +79,54 @@ class SecurePeerGatewayPage extends StatelessWidget {
                 height: 1.4,
               ),
             ),
-            const SizedBox(height: 32),
+
+            // Adjust spacing based on if banner is showing
+            SizedBox(height: _isConnectedToMasterNode ? 16 : 32),
+
+            // ---------------------------------------------------------
+            // THE COMPACT SECURE BANNER
+            // ---------------------------------------------------------
+            if (_isConnectedToMasterNode)
+              Container(
+                margin: const EdgeInsets.only(bottom: 24),
+                padding: const EdgeInsets.symmetric(
+                  vertical: 10,
+                  horizontal: 16,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.greenAccent.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.greenAccent.withOpacity(0.5),
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.verified_user,
+                      color: Colors.greenAccent,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+
+                    // 🚨 WRAP THE TEXT IN A 'Flexible' WIDGET
+                    const Flexible(
+                      child: Text(
+                        "Chain Secured! Connected to Teacher.",
+                        style: TextStyle(
+                          color: Colors.greenAccent,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign
+                            .center, // Centers it if it drops to a second line
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
             // ---------------------------------------------------------
             // OPTION 1: THE SERVER (Show QR / Host GATT)
@@ -56,9 +144,9 @@ class SecurePeerGatewayPage extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      // FIX 1: Removed 'const' and passed the dynamic classroomId
-                      builder: (context) =>
-                          SecureProximityHostPage(classroomId: classroomId),
+                      builder: (context) => SecureProximityHostPage(
+                        classroomId: widget.classroomId,
+                      ),
                     ),
                   );
                 },
@@ -87,8 +175,7 @@ class SecurePeerGatewayPage extends StatelessWidget {
                         ownUid:
                             GlobalStudentProfile.currentStudent?.uid ??
                             "UNKNOWN_UID",
-                        // FIX 2: Passed the dynamic classroomId instead of 123
-                        classroomId: classroomId,
+                        classroomId: widget.classroomId,
                       ),
                     ),
                   );

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:attendance_app/security_reporter.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -43,6 +44,9 @@ class _SecureProximityScannerPageState
   ScanStage _stage = ScanStage.camera;
   String _statusText = "Align QR Code inside the frame";
 
+  // Toggle for RTT Burst Mode
+  bool _useMultiBurst = false; // Default is single write to save time
+
   // Report Data
   List<int> _rtts = [];
   int? _rssi;
@@ -51,7 +55,7 @@ class _SecureProximityScannerPageState
   String _backendMessage = "";
   bool _isSuccess = false;
 
-  // --- NEW: Terminal Logs for debugging ---
+  // Terminal Logs for debugging
   final List<String> _terminalLogs = [];
 
   // GATT Constants
@@ -167,7 +171,9 @@ class _SecureProximityScannerPageState
 
       setState(() {
         _stage = ScanStage.measuring;
-        _statusText = "Executing RTT Burst...";
+        _statusText = _useMultiBurst
+            ? "Executing RTT Burst..."
+            : "Executing Fast RTT...";
       });
 
       _addLog("Discovering Services...");
@@ -226,16 +232,20 @@ class _SecureProximityScannerPageState
         }
       });
 
-      // 5. The RTT Burst (3 rapid writes) RESTORED WITH LOGS
-      _addLog("Firing RTT Burst (3 writes)...");
+      // 5. The RTT Burst (DYNAMIC: 1 OR 3 WRITES)
+      int burstCount = _useMultiBurst ? 3 : 1;
+      _addLog("Firing RTT ($burstCount write(s))...");
       List<int> bursts = [];
-      for (int i = 0; i < 3; i++) {
+
+      for (int i = 0; i < burstCount; i++) {
         Stopwatch sw = Stopwatch()..start();
         await writeChar.write(encryptedChallenge, withoutResponse: false);
         sw.stop();
         bursts.add(sw.elapsedMilliseconds);
         _addLog("Write ${i + 1} ACKed in ${sw.elapsedMilliseconds}ms");
-        await Future.delayed(const Duration(milliseconds: 10)); // Tiny breath
+        if (_useMultiBurst && i < 2) {
+          await Future.delayed(const Duration(milliseconds: 10)); // Tiny breath
+        }
       }
 
       setState(() {
@@ -277,12 +287,37 @@ class _SecureProximityScannerPageState
           "Cryptographic Nonce mismatch. Possible Replay/Spoofing Attack.",
         );
 
-      // Check RTT Limit (Using the minimum RTT to avoid random OS lag spikes)
+      // 🚨 NEW: Check RSSI Limit (Proximity Violation)
+      // -85 dBm generally means they are more than 5 meters apart
+      if (_rssi != null && _rssi! < -85) {
+        _addLog("SECURITY: Signal too weak ($_rssi dBm)", isError: true);
+
+        // Fire Tripwire: Anomaly Type 2 (Proximity Violation)
+        await SecurityReporter.reportAnomaly(
+          anomalyTypeInt: 2,
+          source: "scanner_weak_rssi_$_rssi",
+        );
+
+        throw Exception(
+          "Signal too weak ($_rssi dBm). Move closer to prevent MITM attacks.",
+        );
+      }
+
+      // 🚨 UPDATED: Check RTT Limit (Latency Spike / Relay Attack)
       int minRtt = bursts.reduce(min);
-      if (minRtt > 150)
+      if (minRtt > 150) {
+        _addLog("SECURITY: RTT Spike Detected (${minRtt}ms)", isError: true);
+
+        // Fire Tripwire: Anomaly Type 1 (Latency Spike)
+        await SecurityReporter.reportAnomaly(
+          anomalyTypeInt: 1,
+          source: "scanner_rtt_spike_${minRtt}ms",
+        );
+
         throw Exception(
           "RTT Exceeded 150ms ($minRtt ms). Relay Attack Detected.",
         );
+      }
 
       // Extract Host Node ID (Last 2 bytes)
       _peerNodeId = (decryptedEcho[14] << 8) | decryptedEcho[15];
@@ -355,7 +390,7 @@ class _SecureProximityScannerPageState
       body: SafeArea(
         child: Column(
           children: [
-            // HEADER
+            // HEADER WITH NEW TOGGLE
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: Row(
@@ -365,11 +400,32 @@ class _SecureProximityScannerPageState
                     "SECURE SCANNER",
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: 22,
+                      fontSize: 18,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  if (_stage != ScanStage.report)
+                  if (_stage == ScanStage.camera)
+                    Row(
+                      children: [
+                        const Text(
+                          "MULTI-BURST",
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Switch(
+                          value: _useMultiBurst,
+                          onChanged: (val) {
+                            HapticFeedback.selectionClick();
+                            setState(() => _useMultiBurst = val);
+                          },
+                          activeColor: Colors.indigoAccent,
+                        ),
+                      ],
+                    )
+                  else if (_stage != ScanStage.report)
                     const SizedBox(
                       width: 20,
                       height: 20,
@@ -392,7 +448,7 @@ class _SecureProximityScannerPageState
                   : _buildProcessingView(),
             ),
 
-            // --- NEW: TERMINAL LOGS UI ---
+            // TERMINAL LOGS UI
             if (_stage != ScanStage.camera && _stage != ScanStage.report)
               Expanded(
                 flex: 2,
@@ -607,30 +663,36 @@ class _SecureProximityScannerPageState
                     child: Divider(color: Colors.white12),
                   ),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment: _useMultiBurst
+                        ? MainAxisAlignment.spaceBetween
+                        : MainAxisAlignment.center,
                     children: [
                       _buildMiniStatBox(
-                        "Burst 1",
+                        _useMultiBurst ? "Burst 1" : "Single RTT",
                         _rtts.isNotEmpty ? "${_rtts[0]}ms" : "N/A",
                       ),
-                      _buildMiniStatBox(
-                        "Burst 2",
-                        _rtts.length > 1 ? "${_rtts[1]}ms" : "N/A",
-                      ),
-                      _buildMiniStatBox(
-                        "Burst 3",
-                        _rtts.length > 2 ? "${_rtts[2]}ms" : "N/A",
-                      ),
+                      if (_useMultiBurst) ...[
+                        _buildMiniStatBox(
+                          "Burst 2",
+                          _rtts.length > 1 ? "${_rtts[1]}ms" : "N/A",
+                        ),
+                        _buildMiniStatBox(
+                          "Burst 3",
+                          _rtts.length > 2 ? "${_rtts[2]}ms" : "N/A",
+                        ),
+                      ],
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildHighlightStat("Min RTT", calculateMinRtt()),
-                      _buildHighlightStat("Avg RTT", calculateAverageRtt()),
-                    ],
-                  ),
+                  if (_useMultiBurst) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _buildHighlightStat("Min RTT", calculateMinRtt()),
+                        _buildHighlightStat("Avg RTT", calculateAverageRtt()),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),

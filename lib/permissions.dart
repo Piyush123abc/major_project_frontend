@@ -2,34 +2,38 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class AppPermissions {
+  // ✅ Notification FIRST — before Firebase tries to grab it automatically
   static final List<Permission> _permissions = [
+    Permission.notification,
     Permission.bluetoothScan,
     Permission.bluetoothConnect,
     Permission.bluetoothAdvertise,
     Permission.location,
     Permission.camera,
-    Permission.notification, // Needed for the foreground service
   ];
 
-  /// Requests all runtime permissions
   static Future<bool> requestAllPermissions(BuildContext context) async {
-    // 1. Loop through standard popup permissions
-    for (Permission perm in _permissions) {
-      PermissionStatus status = await perm.status;
-      if (status.isGranted) continue;
+    // ✅ Bump to 4s — Firebase background engine takes time to fully start
+    await Future.delayed(const Duration(milliseconds: 1000));
 
-      status = await perm.request();
+    for (final permission in _permissions) {
+      await Future.delayed(const Duration(milliseconds: 200)); // bigger gap
+
+      final status = await permission.request();
 
       if (status.isPermanentlyDenied) {
-        await _showPermanentDeniedDialog(context, perm);
+        await _showPermanentDeniedDialog(context, permission);
         return false;
       }
-      if (!status.isGranted) return false;
+      // Only hard-fail on non-notification denials
+      if (status.isDenied && permission != Permission.notification) {
+        return false;
+      }
     }
 
-    // 2. Trigger the OFFICIAL Android Battery Optimization prompt directly
+    await Future.delayed(const Duration(milliseconds: 500));
+
     if (await Permission.ignoreBatteryOptimizations.isDenied) {
-      // This line opens the official Android system dialog immediately
       await Permission.ignoreBatteryOptimizations.request();
     }
 

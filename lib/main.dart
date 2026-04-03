@@ -39,12 +39,12 @@ class _MyApp2State extends State<MyApp2> {
     FirebaseMessaging messaging = FirebaseMessaging.instance;
 
     // 1. Explicitly request permission (Required for Android 13+ and iOS)
-    NotificationSettings settings = await messaging.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
-    print('🔐 User granted permission: ${settings.authorizationStatus}');
+    // NotificationSettings settings = await messaging.requestPermission(
+    //   alert: true,
+    //   badge: true,
+    //   sound: true,
+    // );
+    // print('🔐 User granted permission: ${settings.authorizationStatus}');
 
     // 2. Configure foreground notification presentation (For iOS mainly)
     await FirebaseMessaging.instance

@@ -25,6 +25,24 @@ class MainActivity: FlutterFragmentActivity() {
     private val METHOD_CHANNEL = "com.attendance/command"
     private val EVENT_CHANNEL = "com.attendance/events"
 
+    // ✅ ADD THIS BLOCK HERE
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        try {
+            super.onConfigurationChanged(newConfig)
+        } catch (e: NotImplementedError) {
+            android.util.Log.w("MainActivity", "Suppressed plugin stub crash: ${e.message}")
+        }
+    }
+
+    // ✅ ADD THIS BLOCK HERE TOO
+    override fun onDestroy() {
+        try {
+            super.onDestroy()
+        } catch (e: NotImplementedError) {
+            android.util.Log.w("MainActivity", "Suppressed plugin stub crash on destroy: ${e.message}")
+        }
+    }
+
     // The two pipes we need for the Handshake
     private val CHAR_UUID_WRITE = UUID.fromString("11111111-2222-3333-4444-555555555555") // Client -> Host
     private val CHAR_UUID_ECHO = UUID.fromString("22222222-3333-4444-5555-666666666666")  // Host -> Client
